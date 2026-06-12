@@ -17,19 +17,60 @@ export async function POST() {
 
   try {
     const res = await fetch(ATB_API_URL, {
-      headers: { Accept: "application/json", "User-Agent": "Mozilla/5.0 (Mamontenok)" },
+      headers: {
+        Accept: "application/json",
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
+        Referer: "https://mobile.atb.su/",
+        Origin: "https://mobile.atb.su",
+      },
       cache: "no-store",
     });
-    if (!res.ok) return NextResponse.json({ error: `АТБ API вернул ${res.status}` }, { status: 502 });
 
-    const json: AtbResponse = await res.json();
-    const cnyEntry = json.data?.find((c) => c.charCode === "CNY");
-    if (!cnyEntry) return NextResponse.json({ error: "CNY не найден в ответе АТБ." }, { status: 502 });
+    const rawText = await res.text();
+    console.log("[ATB API] status:", res.status, "body length:", rawText.length);
+    console.log("[ATB API] body preview:", rawText.substring(0, 500));
+
+    if (!res.ok) {
+      return NextResponse.json({
+        error: `АТБ API вернул ${res.status}`,
+        debug: { status: res.status, body: rawText.substring(0, 500) },
+      }, { status: 502 });
+    }
+
+    let json: AtbResponse;
+    try { json = JSON.parse(rawText); }
+    catch {
+      return NextResponse.json({
+        error: "АТБ ответил не-JSON. Возможно региональная блокировка.",
+        debug: { bodyPreview: rawText.substring(0, 500) },
+      }, { status: 502 });
+    }
+
+    if (!json.data || !Array.isArray(json.data) || json.data.length === 0) {
+      return NextResponse.json({
+        error: "АТБ вернул пустой data[] — вероятно блокировка региона",
+        debug: { json },
+      }, { status: 502 });
+    }
+
+    const cnyEntry = json.data.find((c) => c.charCode === "CNY");
+    if (!cnyEntry) {
+      const codes = json.data.map((c) => c.charCode).join(", ");
+      return NextResponse.json({
+        error: `CNY не найден. В ответе только: ${codes}`,
+        debug: { availableCodes: codes, data: json.data },
+      }, { status: 502 });
+    }
 
     const atbSelling = cnyEntry.atbRate?.sellingRate;
     const cbrRate = cnyEntry.cbrRate?.rate;
+
     if (!atbSelling || atbSelling <= 0) {
-      return NextResponse.json({ error: "У CNY в ответе АТБ нет sellingRate." }, { status: 502 });
+      return NextResponse.json({
+        error: "У CNY нет sellingRate",
+        debug: { cnyEntry },
+      }, { status: 502 });
     }
 
     const supabase = await createSupabaseAdmin();
@@ -47,9 +88,9 @@ export async function POST() {
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
     return NextResponse.json(data);
   } catch (err) {
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Unknown error" },
-      { status: 500 },
-    );
+    return NextResponse.json({
+      error: err instanceof Error ? err.message : "Unknown error",
+      debug: { stack: err instanceof Error ? err.stack : null },
+    }, { status: 500 });
   }
 }
