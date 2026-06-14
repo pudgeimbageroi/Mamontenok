@@ -63,11 +63,17 @@ export async function POST() {
       }, { status: 502 });
     }
 
-    const atbSelling = cnyEntry.atbRate?.sellingRate;
+    // ВАЖНО: buyingRate — курс по которому МЫ ПОКУПАЕМ юани в АТБ
+    // (платим этот курс за 1 ¥, чтобы потом отправить QR в Китай).
+    // sellingRate — это если бы мы продавали юани обратно банку.
+    const atbBuying = cnyEntry.atbRate?.buyingRate;
     const cbrRate = cnyEntry.cbrRate?.rate;
 
-    if (!atbSelling || atbSelling <= 0) {
-      return NextResponse.json({ error: "У CNY нет sellingRate", debug: { cnyEntry } }, { status: 502 });
+    if (!atbBuying || atbBuying <= 0) {
+      return NextResponse.json({
+        error: "У CNY нет buyingRate",
+        debug: { cnyEntry },
+      }, { status: 502 });
     }
 
     const supabase = await createSupabaseAdmin();
@@ -77,7 +83,7 @@ export async function POST() {
 
     const { data, error } = await supabase.from("rates").insert({
       cbr_rate: cbrRate ?? null,
-      atb_app_rate: atbSelling,
+      atb_app_rate: atbBuying,
       atb_actual_rate: prev?.atb_actual_rate ?? null,
       source: "atb_api",
     }).select().single();
