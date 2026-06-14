@@ -1,6 +1,5 @@
 import { redirect } from "next/navigation";
 import { getSession } from "@/lib/auth";
-import { TelegramBootstrap } from "@/components/telegram-bootstrap";
 
 const ERROR_MESSAGES: Record<string, string> = {
   missing_token: "Не передан токен. Попробуй ещё раз.",
@@ -25,7 +24,6 @@ export default async function LandingPage({
 
   return (
     <main className="min-h-screen flex flex-col items-center justify-center px-6 bg-gradient-to-b from-ink-50 via-white to-brand-50">
-      <TelegramBootstrap redirectTo="/app" />
       <div className="w-full max-w-md text-center">
         <div className="text-7xl mb-6 select-none">🦣</div>
 

@@ -1,6 +1,5 @@
 import type { Metadata, Viewport } from "next";
 import { Wix_Madefor_Display, Wix_Madefor_Text } from "next/font/google";
-import Script from "next/script";
 import "./globals.css";
 
 const display = Wix_Madefor_Display({
@@ -24,16 +23,11 @@ export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
   maximumScale: 1,
-  userScalable: false,
-  themeColor: "#0883FF",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="ru" className={`${display.variable} ${body.variable}`}>
-      <head>
-        <Script src="https://telegram.org/js/telegram-web-app.js?56" strategy="beforeInteractive" />
-      </head>
       <body className="min-h-screen antialiased">{children}</body>
     </html>
   );

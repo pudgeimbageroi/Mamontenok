@@ -238,7 +238,7 @@ export function DealForm({
             accent
           />
           <KpiItem
-            label="🪨 На одного неандертальца"
+            label="🐺 На одного хищника"
             value={formatRub(calcs.share)}
             subvalue={form.atb_rate > 0 ? `≈ ${formatCny(calcs.share / form.atb_rate)}` : undefined}
             accent
