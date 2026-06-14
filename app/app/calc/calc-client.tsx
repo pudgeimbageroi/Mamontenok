@@ -1,9 +1,9 @@
 "use client";
 
-import { useState, useTransition, useCallback } from "react";
+import { useState, useCallback } from "react";
 import {
   RefreshCw, AlertTriangle, TrendingUp, TrendingDown,
-  Sparkles, Coins, Banknote, ArrowRight, ArrowLeftRight,
+  Sparkles, Coins, Banknote, ArrowLeftRight, Check,
 } from "lucide-react";
 import { cn, formatRub, formatCny, formatRate } from "@/lib/utils";
 import {
@@ -14,6 +14,7 @@ import {
   calcDealFromRub,
   ATB_PREMIUM,
 } from "@/lib/calc";
+import { useDebouncedCallback } from "@/lib/use-debounced";
 import type { RateRow, MarkupSettings } from "@/lib/types";
 
 const MIN_PROFIT_WARNING = 5000;
@@ -30,7 +31,7 @@ export function CalcClient({
   const [amountCny, setAmountCny] = useState(5000);
   const [budgetRub, setBudgetRub] = useState(100000);
   const [refreshing, setRefreshing] = useState(false);
-  const [_pending, startTransition] = useTransition();
+  const [refreshedAt, setRefreshedAt] = useState<number | null>(null);
 
   const myRate = computeMyRate(rates, markup);
   const atbRate = effectiveAtbRate(rates);
@@ -38,53 +39,63 @@ export function CalcClient({
   const dealCny = calcDealFromCny(amountCny, rates, markup);
   const dealRub = calcDealFromRub(budgetRub, rates, markup);
 
-  const updateRates = useCallback(async (patch: Partial<RateRow>) => {
-    const next = { ...rates, ...patch } as RateRow;
-    setRates(next);
-    startTransition(async () => {
-      try {
-        const res = await fetch("/api/rates", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            cbr_rate: next.cbr_rate,
-            atb_app_rate: next.atb_app_rate,
-            atb_actual_rate: next.atb_actual_rate,
-            source: "manual",
-          }),
-        });
-        const fresh = await res.json();
-        if (res.ok) setRates(fresh);
-      } catch (err) { console.error(err); }
+  // Debounced save — отправляем на сервер через 600мс после последнего изменения,
+  // а UI обновляется мгновенно. Никаких лагов при печати.
+  const saveRatesToServer = useCallback(async (next: RateRow) => {
+    try {
+      await fetch("/api/rates", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          cbr_rate: next.cbr_rate,
+          atb_app_rate: next.atb_app_rate,
+          atb_actual_rate: next.atb_actual_rate,
+          source: "manual",
+        }),
+      });
+    } catch (err) { console.error(err); }
+  }, []);
+  const debouncedSaveRates = useDebouncedCallback(saveRatesToServer, 600);
+
+  const updateRates = useCallback((patch: Partial<RateRow>) => {
+    setRates((prev) => {
+      const next = { ...prev, ...patch } as RateRow;
+      debouncedSaveRates(next);
+      return next;
     });
-  }, [rates]);
+  }, [debouncedSaveRates]);
 
   const refreshAtbFromApi = async () => {
     setRefreshing(true);
     try {
       const res = await fetch("/api/rates/atb", { method: "POST" });
       const data = await res.json();
-      if (res.ok) setRates(data);
-      else alert(`Не удалось обновить АТБ: ${data.error}`);
+      if (res.ok) {
+        setRates(data);
+        setRefreshedAt(Date.now());
+        setTimeout(() => setRefreshedAt(null), 3000);
+      } else {
+        alert(`Не удалось обновить: ${data.error}`);
+      }
     } catch (err) { console.error(err); }
     finally { setRefreshing(false); }
   };
 
+  const saveMarkupToServer = useCallback(async (patch: Partial<MarkupSettings>) => {
+    try {
+      await fetch("/api/markup", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      });
+    } catch (err) { console.error(err); }
+  }, []);
+  const debouncedSaveMarkup = useDebouncedCallback(saveMarkupToServer, 600);
+
   const updateMarkup = useCallback((patch: Partial<MarkupSettings>) => {
-    const next = { ...markup, ...patch };
-    setMarkup(next);
-    startTransition(async () => {
-      try {
-        const res = await fetch("/api/markup", {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(patch),
-        });
-        const fresh = await res.json();
-        if (res.ok) setMarkup(fresh);
-      } catch (err) { console.error(err); }
-    });
-  }, [markup]);
+    setMarkup((prev) => ({ ...prev, ...patch }));
+    debouncedSaveMarkup(patch);
+  }, [debouncedSaveMarkup]);
 
   return (
     <div className="space-y-8">
@@ -101,10 +112,19 @@ export function CalcClient({
         <button
           onClick={refreshAtbFromApi}
           disabled={refreshing}
-          className="inline-flex items-center gap-2 bg-white border border-ink-200 hover:border-brand-500 hover:text-brand-700 text-sm font-medium px-4 py-2.5 rounded-xl shadow-sm transition-all disabled:opacity-50"
+          className={cn(
+            "inline-flex items-center gap-2 text-sm font-medium px-4 py-2.5 rounded-xl shadow-sm transition-all disabled:opacity-50",
+            refreshedAt
+              ? "bg-success-bg border border-success/30 text-success"
+              : "bg-white border border-ink-200 hover:border-brand-500 hover:text-brand-700",
+          )}
         >
-          <RefreshCw className={cn("size-4", refreshing && "animate-spin")} />
-          {refreshing ? "Тяну АТБ…" : "Обновить курс АТБ"}
+          {refreshedAt ? (
+            <Check className="size-4" />
+          ) : (
+            <RefreshCw className={cn("size-4", refreshing && "animate-spin")} />
+          )}
+          {refreshing ? "Тяну курсы…" : refreshedAt ? "Обновлено" : "Обновить курсы (ЦБ + АТБ)"}
         </button>
       </div>
 
@@ -232,7 +252,7 @@ export function CalcClient({
                 isProfit: true,
               },
               {
-                label: "На одного хищника",
+                label: "На одного неандертальца",
                 value: formatRub(dealCny.shareRub),
                 subvalue: atbRate > 0 ? `≈ ${formatCny(dealCny.shareRub / atbRate)}` : undefined,
                 isShare: true,
@@ -260,7 +280,7 @@ export function CalcClient({
                 isProfit: true,
               },
               {
-                label: "На одного хищника",
+                label: "На одного неандертальца",
                 value: formatRub(dealRub.shareRub),
                 subvalue: atbRate > 0 ? `≈ ${formatCny(dealRub.shareRub / atbRate)}` : undefined,
                 isShare: true,
@@ -456,7 +476,7 @@ function CalcBlock({
                 row.highlight || row.isShare ? "font-semibold text-ink-900" : "text-ink-500",
                 row.isShare && "flex items-center gap-1.5",
               )}>
-                {row.isShare && <span className="text-xs">🐺</span>}
+                {row.isShare && <span className="text-xs">🪨</span>}
                 {row.label}
               </span>
               <div className="text-right">

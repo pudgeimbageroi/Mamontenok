@@ -202,14 +202,14 @@ export function DashboardClient({
       <section className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <PartnerKpi
           name="Моя доля (Семён)"
-          emoji="🐺"
+          emoji="🪨"
           accumulated={stats.myShare}
           toPay={stats.myToPay}
           atbRate={deals[0]?.atb_rate ?? 0}
         />
         <PartnerKpi
           name="Доля Егора"
-          emoji="🐺"
+          emoji="🪨"
           accumulated={stats.egorShare}
           toPay={stats.egorToPay}
           atbRate={deals[0]?.atb_rate ?? 0}

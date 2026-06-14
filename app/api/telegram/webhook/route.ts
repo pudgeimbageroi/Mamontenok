@@ -163,8 +163,8 @@ async function sendBalance(fromId: number) {
     `💰 <b>СОСТОЯНИЕ КАССЫ</b>\n\n` +
       `📊 На счету АТБ: <b>${fmtRub(atbBalance)}</b>\n` +
       `📈 Чистая прибыль: <b>${fmtRub(profit)}</b>\n\n` +
-      `🐺 <b>Семёну к выплате:</b> ${fmtRub(semyonOwed)}\n` +
-      `🐺 <b>Егору к выплате:</b> ${fmtRub(egorOwed)}\n\n` +
+      `🪨 <b>Семёну к выплате:</b> ${fmtRub(semyonOwed)}\n` +
+      `🪨 <b>Егору к выплате:</b> ${fmtRub(egorOwed)}\n\n` +
       `<i>Сделок завершено: ${completed.length}</i>`,
   );
 }

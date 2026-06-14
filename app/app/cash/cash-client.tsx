@@ -147,14 +147,14 @@ export function CashClient({
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <PartnerCard
             name="Семён (я)"
-            emoji="🐺"
+            emoji="🪨"
             accumulated={stats.semyonAccumulated}
             withdrawn={stats.withdrawnSemyon}
             toPay={stats.semyonToPay}
           />
           <PartnerCard
             name="Егор"
-            emoji="🐺"
+            emoji="🪨"
             accumulated={stats.egorAccumulated}
             withdrawn={stats.withdrawnEgor}
             toPay={stats.egorToPay}
