@@ -23,12 +23,16 @@ const TOKEN_TTL_MS = 15 * 60 * 1000;
 interface TelegramUpdate {
   message?: {
     text?: string;
-    chat: { id: number };
+    chat: {
+      id: number;
+      type: "private" | "group" | "supergroup" | "channel";
+    };
     from: {
       id: number;
       first_name: string;
       last_name?: string;
       username?: string;
+      is_bot?: boolean;
     };
   };
 }
@@ -47,6 +51,17 @@ export async function POST(req: NextRequest) {
   const message = update.message;
   if (!message?.text) return NextResponse.json({ ok: true });
 
+  // ─── ЗАЩИТА 1: Только приватный чат с ботом ───
+  // Игнорим групповые чаты, супергруппы, каналы — тихо
+  if (message.chat.type !== "private") {
+    return NextResponse.json({ ok: true });
+  }
+
+  // ─── ЗАЩИТА 2: Не отвечаем другим ботам ───
+  if (message.from.is_bot) {
+    return NextResponse.json({ ok: true });
+  }
+
   const text = message.text.trim();
   const fromId = message.from.id;
   const firstName = message.from.first_name;
@@ -54,13 +69,16 @@ export async function POST(req: NextRequest) {
   const displayName = [firstName, lastName].filter(Boolean).join(" ");
   const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "https://mamontenok.vercel.app";
 
-  // Whitelist гейт — все команды только для своих
+  // ─── ЗАЩИТА 3: Whitelist — полное молчание для чужих ───
+  // Не отвечаем, не сливаем что бот существует, не выдаём подсказок.
+  // Логируем попытку чтобы видеть кто пытался достучаться.
   if (!isAllowedTelegramId(fromId)) {
-    await sendBotMessage(
-      fromId,
-      `🚫 <b>Не наш человек</b>\n\nТвой Telegram ID: <code>${fromId}</code>\n\nЕсли это ошибка — стукни Семёну.`,
+    const username = message.from.username ? `@${message.from.username}` : "no-username";
+    console.warn(
+      `[BOT-SECURITY] Unauthorized access blocked: id=${fromId} ${username} ` +
+      `name="${displayName}" text="${text.substring(0, 50)}"`
     );
-    return NextResponse.json({ ok: true });
+    return NextResponse.json({ ok: true }); // 200 OK, но молчим
   }
 
   // ─── /start или /login или /start auth_X — magic-link ───
