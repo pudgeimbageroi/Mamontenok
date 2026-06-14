@@ -225,8 +225,18 @@ export function CalcClient({
             rows={[
               { label: "Студент платит", value: formatRub(dealCny.studentPaysRub), highlight: true },
               { label: "Уйдёт с АТБ", value: formatRub(dealCny.atbOutflowRub) },
-              { label: "Прибыль", value: formatRub(dealCny.profitRub), isProfit: true },
-              { label: "На одного хищника", value: formatRub(dealCny.shareRub), isShare: true },
+              {
+                label: "Прибыль",
+                value: formatRub(dealCny.profitRub),
+                subvalue: atbRate > 0 ? `≈ ${formatCny(dealCny.profitRub / atbRate)}` : undefined,
+                isProfit: true,
+              },
+              {
+                label: "На одного хищника",
+                value: formatRub(dealCny.shareRub),
+                subvalue: atbRate > 0 ? `≈ ${formatCny(dealCny.shareRub / atbRate)}` : undefined,
+                isShare: true,
+              },
             ]}
             profit={dealCny.profitRub}
           />
@@ -243,8 +253,18 @@ export function CalcClient({
             rows={[
               { label: "Получит юаней", value: formatCny(dealRub.amountCny), highlight: true },
               { label: "Уйдёт с АТБ", value: formatRub(dealRub.atbOutflowRub) },
-              { label: "Прибыль", value: formatRub(dealRub.profitRub), isProfit: true },
-              { label: "На одного хищника", value: formatRub(dealRub.shareRub), isShare: true },
+              {
+                label: "Прибыль",
+                value: formatRub(dealRub.profitRub),
+                subvalue: atbRate > 0 ? `≈ ${formatCny(dealRub.profitRub / atbRate)}` : undefined,
+                isProfit: true,
+              },
+              {
+                label: "На одного хищника",
+                value: formatRub(dealRub.shareRub),
+                subvalue: atbRate > 0 ? `≈ ${formatCny(dealRub.shareRub / atbRate)}` : undefined,
+                isShare: true,
+              },
             ]}
             profit={dealRub.profitRub}
           />
@@ -357,7 +377,7 @@ function MarkupCard({
 // ═══════════════════════════════════════════════════════════════════
 // БЛОК КАЛЬКУЛЯТОРА СДЕЛКИ
 // ═══════════════════════════════════════════════════════════════════
-type Row = { label: string; value: string; highlight?: boolean; isProfit?: boolean; isShare?: boolean };
+type Row = { label: string; value: string; subvalue?: string; highlight?: boolean; isProfit?: boolean; isShare?: boolean };
 
 function CalcBlock({
   accent, icon, title, subtitle, inputLabel, inputSuffix, inputValue, onInputChange, rows, profit,
@@ -430,7 +450,7 @@ function CalcBlock({
         {/* Rows */}
         <div className="border-t border-ink-100 pt-3 space-y-2.5">
           {rows.map((row) => (
-            <div key={row.label} className="flex items-baseline justify-between">
+            <div key={row.label} className="flex items-baseline justify-between gap-3">
               <span className={cn(
                 "text-sm",
                 row.highlight || row.isShare ? "font-semibold text-ink-900" : "text-ink-500",
@@ -439,17 +459,24 @@ function CalcBlock({
                 {row.isShare && <span className="text-xs">🐺</span>}
                 {row.label}
               </span>
-              <span className={cn(
-                "font-display tabular-nums",
-                row.isProfit && profit >= MIN_PROFIT_WARNING && "font-bold text-success text-lg",
-                row.isProfit && lowProfit && "font-bold text-warning text-lg",
-                row.isProfit && loss && "font-bold text-danger text-lg",
-                row.isShare && "font-bold text-brand-800 text-lg",
-                !row.isProfit && !row.isShare && row.highlight && "font-semibold text-ink-900 text-base",
-                !row.isProfit && !row.isShare && !row.highlight && "text-ink-700",
-              )}>
-                {row.value}
-              </span>
+              <div className="text-right">
+                <div className={cn(
+                  "font-display tabular-nums",
+                  row.isProfit && profit >= MIN_PROFIT_WARNING && "font-bold text-success text-lg",
+                  row.isProfit && lowProfit && "font-bold text-warning text-lg",
+                  row.isProfit && loss && "font-bold text-danger text-lg",
+                  row.isShare && "font-bold text-brand-800 text-lg",
+                  !row.isProfit && !row.isShare && row.highlight && "font-semibold text-ink-900 text-base",
+                  !row.isProfit && !row.isShare && !row.highlight && "text-ink-700",
+                )}>
+                  {row.value}
+                </div>
+                {row.subvalue && (
+                  <div className="text-xs text-ink-500 tabular-nums mt-0.5">
+                    {row.subvalue}
+                  </div>
+                )}
+              </div>
             </div>
           ))}
         </div>

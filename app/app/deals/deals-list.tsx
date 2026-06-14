@@ -20,11 +20,18 @@ export function DealsList({ initialDeals }: { initialDeals: Deal[] }) {
     });
   }, [deals, statusFilter, search]);
 
-  const totals = useMemo(() => ({
-    count: filtered.length,
-    revenue: filtered.reduce((s, d) => s + (d.student_pays_rub ?? 0), 0),
-    profit: filtered.reduce((s, d) => s + (d.profit_rub ?? 0), 0),
-  }), [filtered]);
+  const totals = useMemo(() => {
+    const profit = filtered.reduce((s, d) => s + (d.profit_rub ?? 0), 0);
+    const profitCny = filtered.reduce((s, d) => {
+      return d.atb_rate > 0 ? s + (d.profit_rub ?? 0) / d.atb_rate : s;
+    }, 0);
+    return {
+      count: filtered.length,
+      revenue: filtered.reduce((s, d) => s + (d.student_pays_rub ?? 0), 0),
+      profit,
+      profitCny,
+    };
+  }, [filtered]);
 
   return (
     <div className="space-y-6">
@@ -57,8 +64,11 @@ export function DealsList({ initialDeals }: { initialDeals: Deal[] }) {
           <p className="font-display font-bold text-2xl text-brand-800 tabular-nums mt-1">{formatRub(totals.revenue)}</p>
         </div>
         <div className="bg-white border border-ink-200 rounded-2xl p-4">
-          <p className="text-xs uppercase tracking-wider text-ink-500 font-medium">Прибыль ₽</p>
+          <p className="text-xs uppercase tracking-wider text-ink-500 font-medium">Прибыль</p>
           <p className="font-display font-bold text-2xl text-success tabular-nums mt-1">{formatRub(totals.profit)}</p>
+          {totals.profitCny > 0 && (
+            <p className="text-xs text-ink-500 tabular-nums mt-0.5">≈ {formatCny(totals.profitCny)}</p>
+          )}
         </div>
       </div>
 

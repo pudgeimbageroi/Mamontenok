@@ -4,7 +4,7 @@ import { useState, useTransition, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { ArrowLeft, Trash2, Save, AlertTriangle } from "lucide-react";
-import { cn, formatRub } from "@/lib/utils";
+import { cn, formatRub, formatCny } from "@/lib/utils";
 import { DEAL_STATUSES, type DealStatus } from "@/lib/deal-statuses";
 import type { Deal, ReferenceItem } from "@/lib/types";
 
@@ -231,8 +231,18 @@ export function DealForm({
         <div className="grid grid-cols-2 gap-3">
           <KpiItem label="Студент платит" value={formatRub(calcs.studentPays)} />
           <KpiItem label="Уйдёт с АТБ" value={formatRub(calcs.atbOutflow)} />
-          <KpiItem label="Прибыль" value={formatRub(calcs.profit)} accent />
-          <KpiItem label="🐺 На одного хищника" value={formatRub(calcs.share)} accent />
+          <KpiItem
+            label="Прибыль"
+            value={formatRub(calcs.profit)}
+            subvalue={form.atb_rate > 0 ? `≈ ${formatCny(calcs.profit / form.atb_rate)}` : undefined}
+            accent
+          />
+          <KpiItem
+            label="🐺 На одного хищника"
+            value={formatRub(calcs.share)}
+            subvalue={form.atb_rate > 0 ? `≈ ${formatCny(calcs.share / form.atb_rate)}` : undefined}
+            accent
+          />
         </div>
         {calcs.profit > 0 && calcs.profit < MIN_PROFIT_WARNING && (
           <div className="flex items-center gap-2 mt-4 text-xs font-medium">
@@ -358,7 +368,11 @@ function ComboboxInput({
   );
 }
 
-function KpiItem({ label, value, accent }: { label: string; value: string; accent?: boolean }) {
+function KpiItem({
+  label, value, subvalue, accent,
+}: {
+  label: string; value: string; subvalue?: string; accent?: boolean;
+}) {
   return (
     <div>
       <p className="text-xs uppercase tracking-wider opacity-80 font-medium">{label}</p>
@@ -368,6 +382,9 @@ function KpiItem({ label, value, accent }: { label: string; value: string; accen
       )}>
         {value}
       </p>
+      {subvalue && (
+        <p className="text-xs opacity-75 tabular-nums">{subvalue}</p>
+      )}
     </div>
   );
 }

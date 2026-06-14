@@ -1,11 +1,20 @@
-import { PageShell } from "@/components/page-shell";
+import { createSupabaseAdmin } from "@/lib/supabase/server";
+import { CashClient } from "./cash-client";
+import type { Deal } from "@/lib/types";
+import type { CashflowRow } from "@/lib/cash-categories";
 
-export default function CashPage() {
+export default async function CashPage() {
+  const supabase = await createSupabaseAdmin();
+
+  const [dealsRes, cashRes] = await Promise.all([
+    supabase.from("deals").select("*").order("date", { ascending: false }),
+    supabase.from("cashflow").select("*").order("date", { ascending: false }),
+  ]);
+
   return (
-    <PageShell
-      title="Касса · ДДС"
-      subtitle="Движение денежных средств: приходы, расходы, выплаты"
-      sprint="4"
+    <CashClient
+      initialDeals={(dealsRes.data ?? []) as Deal[]}
+      initialCashflow={(cashRes.data ?? []) as CashflowRow[]}
     />
   );
 }
