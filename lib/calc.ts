@@ -6,12 +6,18 @@
 import type { MarkupSettings, RateRow } from "./types";
 
 /**
- * Эффективный курс АТБ для расчётов:
- * фактический если задан, иначе из приложения.
+ * АТБ всегда наценяет 0.03 ₽ сверху курса из приложения при реальном списании.
+ * Эту дельту мы зашили в формулу, чтобы не вводить руками.
+ */
+export const ATB_PREMIUM = 0.03;
+
+/**
+ * Эффективный курс АТБ для расчётов = курс из приложения + 0.03.
  */
 export function effectiveAtbRate(rates: RateRow): number {
-  if (rates.atb_actual_rate && rates.atb_actual_rate > 0) return rates.atb_actual_rate;
-  return rates.atb_app_rate ?? 0;
+  const app = rates.atb_app_rate ?? 0;
+  if (app <= 0) return 0;
+  return app + ATB_PREMIUM;
 }
 
 /**
@@ -23,6 +29,7 @@ export function computeMyRate(rates: RateRow, markup: MarkupSettings): number {
     case "custom_rate":
       return markup.custom_rate_value;
     case "fixed_rub":
+      // Режим оставлен для бэк-совместимости, в UI скрыт.
       return cbr + markup.fixed_rub_value;
     case "percent":
     default:
