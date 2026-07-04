@@ -7,6 +7,7 @@
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/auth";
 import { createSupabaseAdmin } from "@/lib/supabase/server";
+import { notifyOtherPartners } from "@/lib/notifications";
 
 export async function GET(_: Request, { params }: { params: Promise<{ id: string }> }) {
   const session = await getSession();
@@ -27,6 +28,9 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   const body = await req.json();
   const supabase = await createSupabaseAdmin();
 
+  // Старый статус — чтобы понять перешла ли в completed
+  const { data: oldDeal } = await supabase.from("deals").select("status, student_name").eq("id", id).single();
+
   const updates: Record<string, unknown> = { updated_by: session.profileId };
   for (const key of [
     "date", "student_name", "university", "city", "purpose",
@@ -42,7 +46,24 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     .select()
     .single();
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+
+  // 🔔 Push если статус сменился на completed
+  if (oldDeal?.status !== "completed" && data.status === "completed") {
+    const profit = Number(data.profit_rub ?? 0);
+    notifyOtherPartners(
+      session.telegramId,
+      `✅ <b>Сделка закрыта</b>\n\n` +
+        `👤 ${data.student_name}\n` +
+        `📈 Прибыль: <b>${fmtRub(profit)}</b>\n\n` +
+        `<i>Закрыл: ${session.displayName}</i>`,
+    ).catch(() => {});
+  }
+
   return NextResponse.json(data);
+}
+
+function fmtRub(n: number): string {
+  return new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 0 }).format(n) + " ₽";
 }
 
 export async function DELETE(_: Request, { params }: { params: Promise<{ id: string }> }) {

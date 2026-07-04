@@ -6,6 +6,7 @@
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/auth";
 import { createSupabaseAdmin } from "@/lib/supabase/server";
+import { notifyOtherPartners } from "@/lib/notifications";
 
 export async function GET(req: Request) {
   const session = await getSession();
@@ -56,5 +57,21 @@ export async function POST(req: Request) {
     .single();
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+
+  // 🔔 Уведомление партнёру
+  const profit = Number(data.profit_rub ?? 0);
+  notifyOtherPartners(
+    session.telegramId,
+    `⚡ <b>Новая сделка</b>\n\n` +
+      `👤 ${data.student_name}\n` +
+      `💴 ${data.amount_cny} ¥\n` +
+      `📈 Прибыль: <b>${fmtRub(profit)}</b>\n\n` +
+      `<i>Внёс: ${session.displayName}</i>`,
+  ).catch(() => {});
+
   return NextResponse.json(data);
+}
+
+function fmtRub(n: number): string {
+  return new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 0 }).format(n) + " ₽";
 }

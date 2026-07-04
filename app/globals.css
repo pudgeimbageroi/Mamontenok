@@ -4,26 +4,56 @@
 
 @layer base {
   :root {
-    /* CSS vars для shadcn-like компонентов */
     --background: 0 0% 100%;
     --foreground: 222 47% 11%;
     --muted: 210 40% 96.1%;
     --muted-foreground: 215 16% 47%;
     --border: 214 32% 91%;
+
+    /* safe areas (Telegram Mini App + iOS) */
+    --safe-top: env(safe-area-inset-top);
+    --safe-bottom: env(safe-area-inset-bottom);
+    --safe-left: env(safe-area-inset-left);
+    --safe-right: env(safe-area-inset-right);
   }
 
   html {
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+    /* запрет тяжкого pull-to-refresh в mobile WebView */
+    overscroll-behavior-y: none;
   }
 
   body {
     @apply bg-ink-50 text-ink-900 font-body;
     font-feature-settings: "rlig" 1, "calt" 1;
+    /* iOS не скейлит шрифт при rotate */
+    -webkit-text-size-adjust: 100%;
   }
 
   h1, h2, h3, h4, h5, h6 {
     @apply font-display tracking-tight;
+  }
+
+  /* Минимальная touch-target для всех интерактивных элементов на тачскринах */
+  @media (pointer: coarse) {
+    button, a, input, select, textarea, [role="button"] {
+      min-height: 44px;
+    }
+    input[type="checkbox"], input[type="radio"] {
+      min-height: auto;
+      min-width: auto;
+    }
+  }
+
+  /* Скрыть spin-arrows у number inputs в Chrome/Safari */
+  input[type="number"]::-webkit-outer-spin-button,
+  input[type="number"]::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+  input[type="number"] {
+    -moz-appearance: textfield;
   }
 }
 
@@ -31,4 +61,8 @@
   .kpi-number {
     @apply font-display font-bold text-brand-800 tabular-nums;
   }
+
+  /* safe-area паддинги для bottom tab bar и кнопок */
+  .pb-safe { padding-bottom: max(env(safe-area-inset-bottom), 1rem); }
+  .pt-safe { padding-top: env(safe-area-inset-top); }
 }

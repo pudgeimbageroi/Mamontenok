@@ -9,7 +9,7 @@ export function NavBottomTabs() {
   const pathname = usePathname();
 
   return (
-    <nav className="lg:hidden fixed bottom-0 inset-x-0 z-30 border-t border-ink-200 bg-white pb-[env(safe-area-inset-bottom)]">
+    <nav className="lg:hidden fixed bottom-0 inset-x-0 z-30 border-t border-ink-200 bg-white/95 backdrop-blur-md pb-safe">
       <div className="flex">
         {NAV_ITEMS.map(({ href, label, icon: Icon }) => {
           const active =
@@ -19,11 +19,16 @@ export function NavBottomTabs() {
               key={href}
               href={href}
               className={cn(
-                "flex-1 flex flex-col items-center justify-center gap-1 py-2.5 transition-colors",
+                "flex-1 flex flex-col items-center justify-center gap-1 py-2 active:scale-95 transition-all",
                 active ? "text-brand-600" : "text-ink-500",
               )}
             >
-              <Icon className="size-5" strokeWidth={active ? 2.5 : 2} />
+              <div className={cn(
+                "size-7 rounded-full flex items-center justify-center transition-all",
+                active && "bg-brand-50",
+              )}>
+                <Icon className="size-5" strokeWidth={active ? 2.5 : 2} />
+              </div>
               <span className="text-[10px] font-medium leading-none">{label}</span>
             </Link>
           );

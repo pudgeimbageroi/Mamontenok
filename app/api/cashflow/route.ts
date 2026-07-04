@@ -6,6 +6,8 @@
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/auth";
 import { createSupabaseAdmin } from "@/lib/supabase/server";
+import { notifyOtherPartners } from "@/lib/notifications";
+import { cashCategoryInfo } from "@/lib/cash-categories";
 
 export async function GET() {
   const session = await getSession();
@@ -44,5 +46,21 @@ export async function POST(req: Request) {
     .single();
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+
+  // 🔔 Push партнёру
+  const cat = cashCategoryInfo(data.category);
+  notifyOtherPartners(
+    session.telegramId,
+    `💸 <b>Новое движение в кассе</b>\n\n` +
+      `${cat.emoji} ${cat.label}\n` +
+      `Сумма: <b>${fmtRub(Number(data.amount_rub))}</b>\n` +
+      (data.comment ? `📝 ${data.comment}\n` : "") +
+      `\n<i>Внёс: ${session.displayName}</i>`,
+  ).catch(() => {});
+
   return NextResponse.json(data);
+}
+
+function fmtRub(n: number): string {
+  return new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 0 }).format(n) + " ₽";
 }

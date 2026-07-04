@@ -22,6 +22,13 @@ import { NextResponse } from "next/server";
 import { getSession } from "@/lib/auth";
 import { createSupabaseAdmin } from "@/lib/supabase/server";
 
+// 🌍 Запускаем эту функцию во Франкфурте — ближе к РФ, АТБ его не блочит
+// (American IP Vercel'а блокировались, отсюда fetch failed)
+export const runtime = "nodejs";
+export const preferredRegion = ["fra1"];
+export const dynamic = "force-dynamic";
+export const maxDuration = 15;
+
 const ATB_API_URL = "https://mobile.atb.su/atb-gateway/mobile/api/msfl/v1/rate";
 
 interface AtbCurrencyEntry {
@@ -43,8 +50,9 @@ export async function POST() {
   const session = await getSession();
   if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
+  let res: Response;
   try {
-    const res = await fetch(ATB_API_URL, {
+    res = await fetch(ATB_API_URL, {
       headers: {
         Accept: "application/json",
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -53,7 +61,22 @@ export async function POST() {
         Origin: "https://mobile.atb.su",
       },
       cache: "no-store",
+      signal: AbortSignal.timeout(10000), // 10 сек таймаут
     });
+  } catch (err) {
+    // Сетевая ошибка — обычно геоблок или таймаут
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error("[ATB API] Network error:", msg);
+    return NextResponse.json(
+      {
+        error: "АТБ API недоступен из нашего региона. Возможно блокировка IP — попробуй ещё раз или впиши курс вручную.",
+        debug: { networkError: msg },
+      },
+      { status: 502 },
+    );
+  }
+
+  try {
 
     const rawText = await res.text();
     console.log("[ATB API] status:", res.status, "body length:", rawText.length);
