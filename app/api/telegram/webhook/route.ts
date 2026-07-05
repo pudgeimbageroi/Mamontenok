@@ -1,294 +1,318 @@
 /**
- * Telegram Bot Webhook.
+ * POST /api/telegram/webhook
+ * Путь в проекте: app/api/telegram/webhook/route.ts
  *
- * Команды:
- *   /login           — magic-link для входа в аппу
- *   /balance         — остаток на АТБ + долги партнёрам
- *   /today           — сделки сегодня
- *   /last            — 5 последних сделок
- *   /help            — список команд
- *   /start [auth_X]  — стартовый screen или auth-flow
+ * Telegram-бот Мамонтёнка: курс, сделки и касса прямо в чате.
+ * Расчёты берутся из @/lib/calc — один-в-один с калькулятором приложения.
+ *
+ * БЕЗОПАСНОСТЬ (три слоя):
+ *   1) Секрет вебхука — Telegram шлёт заголовок X-Telegram-Bot-Api-Secret-Token,
+ *      сверяем с TELEGRAM_WEBHOOK_SECRET. Чужой POST на эндпоинт отсекается.
+ *   2) Белый список пользователей — отвечаем только тем, чей Telegram ID есть
+ *      в ALLOWED_TELEGRAM_IDS. Всем остальным — тишина.
+ *   3) Разрешённые чаты — команды с данными работают только в личке из белого
+ *      списка и в группах из ALLOWED_CHAT_IDS. В прочих группах бот не работает.
+ *
+ * ENV: TELEGRAM_BOT_TOKEN, ALLOWED_TELEGRAM_IDS (уже есть),
+ *      TELEGRAM_WEBHOOK_SECRET, ALLOWED_CHAT_IDS, опц. ATB_PROXY_URL.
  */
 
-import { NextRequest, NextResponse } from "next/server";
-import { randomBytes } from "crypto";
+import { NextResponse } from "next/server";
 import { createSupabaseAdmin } from "@/lib/supabase/server";
-import { sendBotMessage } from "@/lib/telegram-api";
 import { isAllowedTelegramId } from "@/lib/telegram";
-import type { Deal } from "@/lib/types";
-import type { CashflowRow } from "@/lib/cash-categories";
+import { computeMyRate, effectiveAtbRate, ATB_PREMIUM } from "@/lib/calc";
+import { formatRub, formatCny, formatRate, formatDate } from "@/lib/utils";
+import { statusInfo } from "@/lib/deal-statuses";
+import type { RateRow, MarkupSettings } from "@/lib/types";
 
-const TOKEN_TTL_MS = 15 * 60 * 1000;
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+export const maxDuration = 15;
 
-interface TelegramUpdate {
-  message?: {
-    text?: string;
-    chat: {
-      id: number;
-      type: "private" | "group" | "supergroup" | "channel";
-    };
-    from: {
-      id: number;
-      first_name: string;
-      last_name?: string;
-      username?: string;
-      is_bot?: boolean;
-    };
-  };
+type SB = Awaited<ReturnType<typeof createSupabaseAdmin>>;
+
+const TOKEN = process.env.TELEGRAM_BOT_TOKEN ?? "";
+const WEBHOOK_SECRET = process.env.TELEGRAM_WEBHOOK_SECRET ?? "";
+const ATB_PROXY_URL =
+  process.env.ATB_PROXY_URL ?? "https://functions.yandexcloud.net/d4eidj1qrgbd5odp1n1k";
+
+interface TgChat { id: number; type: string }
+interface TgUser { id: number }
+interface TgMessage { chat: TgChat; from?: TgUser; text?: string }
+interface TgUpdate { message?: TgMessage; edited_message?: TgMessage }
+
+function allowedChatIds(): number[] {
+  return (process.env.ALLOWED_CHAT_IDS ?? "")
+    .split(",").map((s) => s.trim()).filter(Boolean).map(Number);
 }
 
-export async function POST(req: NextRequest) {
-  const expectedSecret = process.env.TELEGRAM_WEBHOOK_SECRET;
-  const providedSecret = req.headers.get("x-telegram-bot-api-secret-token");
-  if (expectedSecret && expectedSecret !== providedSecret) {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+// ─── Telegram API ───
+async function tg(method: string, payload: Record<string, unknown>): Promise<void> {
+  try {
+    await fetch(`https://api.telegram.org/bot${TOKEN}/${method}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  } catch (e) {
+    console.error("[bot] tg error", method, e);
   }
-
-  let update: TelegramUpdate;
-  try { update = await req.json(); }
-  catch { return NextResponse.json({ error: "Invalid JSON" }, { status: 400 }); }
-
-  const message = update.message;
-  if (!message?.text) return NextResponse.json({ ok: true });
-
-  // ─── ЗАЩИТА 1: Только приватный чат с ботом ───
-  // Игнорим групповые чаты, супергруппы, каналы — тихо
-  if (message.chat.type !== "private") {
-    return NextResponse.json({ ok: true });
-  }
-
-  // ─── ЗАЩИТА 2: Не отвечаем другим ботам ───
-  if (message.from.is_bot) {
-    return NextResponse.json({ ok: true });
-  }
-
-  const text = message.text.trim();
-  const fromId = message.from.id;
-  const firstName = message.from.first_name;
-  const lastName = message.from.last_name;
-  const displayName = [firstName, lastName].filter(Boolean).join(" ");
-  const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "https://mamontenok.vercel.app";
-
-  // ─── ЗАЩИТА 3: Whitelist — полное молчание для чужих ───
-  // Не отвечаем, не сливаем что бот существует, не выдаём подсказок.
-  // Логируем попытку чтобы видеть кто пытался достучаться.
-  if (!isAllowedTelegramId(fromId)) {
-    const username = message.from.username ? `@${message.from.username}` : "no-username";
-    console.warn(
-      `[BOT-SECURITY] Unauthorized access blocked: id=${fromId} ${username} ` +
-      `name="${displayName}" text="${text.substring(0, 50)}"`
-    );
-    return NextResponse.json({ ok: true }); // 200 OK, но молчим
-  }
-
-  // ─── /start или /login или /start auth_X — magic-link ───
-  if (text === "/start" || text === "/login" || text.startsWith("/start auth_")) {
-    await sendMagicLink(fromId, firstName, displayName, appUrl);
-    return NextResponse.json({ ok: true });
-  }
-
-  // ─── /balance ───
-  if (text === "/balance" || text === "/баланс") {
-    await sendBalance(fromId);
-    return NextResponse.json({ ok: true });
-  }
-
-  // ─── /today ───
-  if (text === "/today" || text === "/сегодня") {
-    await sendToday(fromId);
-    return NextResponse.json({ ok: true });
-  }
-
-  // ─── /last ───
-  if (text === "/last" || text === "/последние") {
-    await sendLast(fromId);
-    return NextResponse.json({ ok: true });
-  }
-
-  // ─── /help ───
-  if (text === "/help" || text === "/помощь") {
-    await sendHelp(fromId);
-    return NextResponse.json({ ok: true });
-  }
-
-  // Неизвестная команда
-  await sendBotMessage(
-    fromId,
-    `Не понял команду. Жми <b>/help</b> чтобы посмотреть что я умею.`,
-  );
-  return NextResponse.json({ ok: true });
 }
-
-// ═══════════════════════════════════════════════════════════════════
-// COMMANDS
-// ═══════════════════════════════════════════════════════════════════
-
-async function sendMagicLink(fromId: number, firstName: string, displayName: string, appUrl: string) {
-  const supabase = await createSupabaseAdmin();
-
-  // Upsert профиль
-  await supabase.from("profiles").upsert(
-    { telegram_id: fromId, display_name: displayName },
-    { onConflict: "telegram_id" },
-  );
-
-  // Создаём токен confirmed сразу
-  const token = randomBytes(32).toString("hex");
-  const expiresAt = new Date(Date.now() + TOKEN_TTL_MS).toISOString();
-  await supabase.from("auth_tokens").insert({
-    token,
-    telegram_id: fromId,
-    confirmed_at: new Date().toISOString(),
-    expires_at: expiresAt,
+function esc(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+function reply(chatId: number, text: string): Promise<void> {
+  return tg("sendMessage", {
+    chat_id: chatId, text, parse_mode: "HTML", disable_web_page_preview: true,
   });
-
-  const link = `${appUrl}/api/auth/confirm?token=${token}`;
-  await sendBotMessage(
-    fromId,
-    `Привет, ${firstName}! 👋\n\n` +
-      `Жми чтобы войти в <b>Мамонтёнок</b>:\n${link}\n\n` +
-      `<i>Действует 15 минут.</i>`,
-    { disable_web_page_preview: true },
-  );
+}
+function parseNum(s: string): number | null {
+  if (!s) return null;
+  const n = parseFloat(s.replace(",", ".").replace(/\s/g, ""));
+  return isFinite(n) ? n : null;
 }
 
-async function sendBalance(fromId: number) {
-  const supabase = await createSupabaseAdmin();
+// ─── данные ───
+async function getRates(sb: SB): Promise<RateRow | null> {
+  const { data } = await sb.from("rates").select("*")
+    .order("fetched_at", { ascending: false }).limit(1).single();
+  return (data as RateRow) ?? null;
+}
+async function getMarkup(sb: SB): Promise<MarkupSettings | null> {
+  const { data } = await sb.from("markup_settings").select("*")
+    .order("updated_at", { ascending: false }).limit(1).single();
+  return (data as MarkupSettings) ?? null;
+}
+async function getProfileId(sb: SB, telegramId: number): Promise<string | null> {
+  const { data } = await sb.from("profiles").select("id")
+    .eq("telegram_id", telegramId).limit(1).maybeSingle();
+  return (data as { id: string } | null)?.id ?? null;
+}
+
+function helpText(): string {
+  return [
+    "<b>🦣 Мамонтёнок — бот</b>",
+    "",
+    "/курс — текущие курсы и мой курс",
+    "/обновить — подтянуть свежий курс АТБ",
+    "/сделка Имя Сумма¥ [мойКурс] — оформить сделку",
+    "/сделки [N] — последние сделки",
+    "/касса — остаток на счёте и доли",
+    "/chatid — id этого чата (для настройки)",
+    "",
+    "<i>Латиницей тоже работает: /rate /update /deal /deals /cash</i>",
+  ].join("\n");
+}
+
+// ─── команды ───
+async function cmdRate(chatId: number, sb: SB): Promise<void> {
+  const rates = await getRates(sb);
+  const markup = await getMarkup(sb);
+  if (!rates || !markup) { await reply(chatId, "Нет данных о курсе. Нажми /обновить."); return; }
+  const my = computeMyRate(rates, markup);
+  const atb = effectiveAtbRate(rates);
+  const profit = my - atb;
+  const modeLabel = markup.mode === "percent" ? `наценка ${markup.percent_value}%`
+    : markup.mode === "custom_rate" ? "свой курс" : "фикс. ₽";
+  await reply(chatId, [
+    "<b>📊 Курсы</b>",
+    `ЦБ РФ: <b>${formatRate(rates.cbr_rate)}</b>`,
+    `АТБ (прил.): <b>${formatRate(rates.atb_app_rate)}</b>`,
+    `АТБ (факт., +${ATB_PREMIUM}): <b>${formatRate(atb)}</b>`,
+    "",
+    `Мой курс (${modeLabel}): <b>${formatRate(my)} ₽/¥</b>`,
+    `Прибыль с 1 ¥: <b>${profit >= 0 ? "+" : ""}${formatRate(profit)} ₽</b>`,
+    "",
+    `<i>обновлено: ${formatDate(rates.fetched_at)}</i>`,
+  ].join("\n"));
+}
+
+async function cmdUpdate(chatId: number, sb: SB): Promise<void> {
+  await reply(chatId, "⏳ Тяну курс из АТБ…");
+  let json: { data?: Array<{ charCode?: string; atbRate?: { buyingRate?: number }; cbrRate?: { rate?: number } }> };
+  try {
+    const r = await fetch(ATB_PROXY_URL, {
+      headers: { Accept: "application/json" }, cache: "no-store",
+      signal: AbortSignal.timeout(12000),
+    });
+    if (!r.ok) { await reply(chatId, `Прокси-функция вернула ${r.status}.`); return; }
+    json = await r.json();
+  } catch {
+    await reply(chatId, "Не удалось получить курс. Попробуй позже.");
+    return;
+  }
+  const cny = (json.data ?? []).find((c) => c?.charCode === "CNY");
+  const buying = cny?.atbRate?.buyingRate;
+  const cbr = cny?.cbrRate?.rate;
+  if (!buying || buying <= 0) { await reply(chatId, "В ответе нет курса CNY."); return; }
+  const { data: prev } = await sb.from("rates").select("atb_actual_rate")
+    .order("fetched_at", { ascending: false }).limit(1).maybeSingle();
+  const prevActual = (prev as { atb_actual_rate: number | null } | null)?.atb_actual_rate ?? null;
+  const { error } = await sb.from("rates").insert({
+    cbr_rate: cbr ?? null, atb_app_rate: buying, atb_actual_rate: prevActual, source: "atb_api",
+  });
+  if (error) { await reply(chatId, "Ошибка записи курса в базу."); return; }
+  await cmdRate(chatId, sb);
+}
+
+interface DealComputed {
+  status: string; student_name: string; amount_cny: number; my_rate: number; date: string;
+  student_pays_rub: number; atb_outflow_rub: number; profit_rub: number; my_share_rub: number;
+}
+
+async function cmdDeal(chatId: number, args: string[], fromId: number, sb: SB): Promise<void> {
+  const nums: number[] = [];
+  const words: string[] = [];
+  for (const t of args) {
+    const n = parseNum(t);
+    if (n != null) nums.push(n); else words.push(t);
+  }
+  const amount = nums[0];
+  const rateOverride = nums[1];
+  const name = words.join(" ").trim();
+  if (!amount || amount <= 0 || !name) {
+    await reply(chatId, "Формат: <code>/сделка Имя Сумма¥ [мойКурс]</code>\nНапр.: <code>/сделка Иван 5000</code>");
+    return;
+  }
+  const rates = await getRates(sb);
+  const markup = await getMarkup(sb);
+  if (!rates || !markup) { await reply(chatId, "Нет курса — сначала /обновить."); return; }
+  const atb = effectiveAtbRate(rates);
+  const my = rateOverride && rateOverride > 0 ? rateOverride : computeMyRate(rates, markup);
+  const createdBy = await getProfileId(sb, fromId);
+
+  const { data, error } = await sb.from("deals").insert({
+    student_name: name,
+    amount_cny: amount,
+    atb_rate: atb,
+    cbr_rate: rates.cbr_rate ?? null,
+    my_rate: my,
+    status: "pending",
+    created_by: createdBy,
+  }).select().single();
+
+  if (error || !data) { await reply(chatId, "Ошибка создания сделки: " + esc(error?.message ?? "unknown")); return; }
+  const d = data as DealComputed;
+  const st = statusInfo(d.status);
+  await reply(chatId, [
+    "<b>✅ Сделка создана</b>",
+    `Студент: <b>${esc(name)}</b>`,
+    `Сумма: <b>${formatCny(amount)}</b>`,
+    `Мой курс: <b>${formatRate(my)} ₽/¥</b>`,
+    "",
+    `Студент платит: <b>${formatRub(d.student_pays_rub)}</b>`,
+    `Уйдёт с АТБ: ${formatRub(d.atb_outflow_rub)}`,
+    `Прибыль: <b>${formatRub(d.profit_rub)}</b>`,
+    `На одного (🪨): ${formatRub(d.my_share_rub)}`,
+    "",
+    `Статус: ${st.label}`,
+  ].join("\n"));
+}
+
+async function cmdDeals(chatId: number, args: string[], sb: SB): Promise<void> {
+  let n = parseInt(args[0] ?? "", 10);
+  if (!isFinite(n) || n <= 0) n = 5;
+  n = Math.min(n, 20);
+  const { data } = await sb.from("deals").select("*")
+    .order("created_at", { ascending: false }).limit(n);
+  const rows = (data as DealComputed[] | null) ?? [];
+  if (rows.length === 0) { await reply(chatId, "Сделок пока нет."); return; }
+  const lines = rows.map((d) => {
+    const st = statusInfo(d.status);
+    return `• ${formatDate(d.date)} — <b>${esc(d.student_name)}</b> · ${formatCny(d.amount_cny)} · ${formatRate(d.my_rate)} · приб. ${formatRub(d.profit_rub)} · ${st.label}`;
+  });
+  await reply(chatId, [`<b>🧾 Последние сделки (${rows.length})</b>`, "", ...lines].join("\n"));
+}
+
+async function cmdCash(chatId: number, sb: SB): Promise<void> {
   const [dealsRes, cashRes] = await Promise.all([
-    supabase.from("deals").select("*"),
-    supabase.from("cashflow").select("*"),
+    sb.from("deals").select("student_pays_rub, atb_outflow_rub, profit_rub, amount_cny"),
+    sb.from("cashflow").select("category, amount_rub"),
   ]);
-
-  const deals = (dealsRes.data ?? []) as Deal[];
-  const cash = (cashRes.data ?? []) as CashflowRow[];
-  const completed = deals.filter((d) => d.status === "completed");
-
-  const income = completed.reduce((s, d) => s + (d.student_pays_rub ?? 0), 0);
-  const outflow = completed.reduce((s, d) => s + (d.atb_outflow_rub ?? 0), 0);
+  const D = (dealsRes.data as Array<{ student_pays_rub: number | null; atb_outflow_rub: number | null }> | null) ?? [];
+  const C = (cashRes.data as Array<{ category: string; amount_rub: number }> | null) ?? [];
+  const income = D.reduce((s, d) => s + (d.student_pays_rub ?? 0), 0);
+  const outflow = D.reduce((s, d) => s + (d.atb_outflow_rub ?? 0), 0);
   const profit = income - outflow;
-
-  const withdrawnSemyon = cash.filter((c) => c.category === "withdrawal_to_semyon").reduce((s, c) => s + c.amount_rub, 0);
-  const withdrawnEgor = cash.filter((c) => c.category === "withdrawal_to_egor").reduce((s, c) => s + c.amount_rub, 0);
-  const otherSpending = cash.filter((c) => !["withdrawal_to_semyon", "withdrawal_to_egor"].includes(c.category)).reduce((s, c) => s + c.amount_rub, 0);
-
-  const atbBalance = income - outflow - withdrawnSemyon - withdrawnEgor - otherSpending;
-  const share = profit / 2;
-  const semyonOwed = Math.max(0, share - withdrawnSemyon);
-  const egorOwed = Math.max(0, share - withdrawnEgor);
-
-  await sendBotMessage(
-    fromId,
-    `💰 <b>СОСТОЯНИЕ КАССЫ</b>\n\n` +
-      `📊 На счету АТБ: <b>${fmtRub(atbBalance)}</b>\n` +
-      `📈 Чистая прибыль: <b>${fmtRub(profit)}</b>\n\n` +
-      `🪨 <b>Семёну к выплате:</b> ${fmtRub(semyonOwed)}\n` +
-      `🪨 <b>Егору к выплате:</b> ${fmtRub(egorOwed)}\n\n` +
-      `<i>Сделок завершено: ${completed.length}</i>`,
-  );
+  const wSem = C.filter((c) => c.category === "withdrawal_to_semyon").reduce((s, c) => s + c.amount_rub, 0);
+  const wEgor = C.filter((c) => c.category === "withdrawal_to_egor").reduce((s, c) => s + c.amount_rub, 0);
+  const other = C.filter((c) => c.category !== "withdrawal_to_semyon" && c.category !== "withdrawal_to_egor")
+    .reduce((s, c) => s + c.amount_rub, 0);
+  const atbBalance = income - outflow - wSem - wEgor - other;
+  const semToPay = profit / 2 - wSem;
+  const egorToPay = profit / 2 - wEgor;
+  await reply(chatId, [
+    "<b>💰 Касса</b>",
+    `Остаток на счёте АТБ: <b>${formatRub(atbBalance)}</b>`,
+    "",
+    `Приход от студентов: ${formatRub(income)}`,
+    `Отправлено в Китай: ${formatRub(outflow)}`,
+    `Чистая прибыль: <b>${formatRub(profit)}</b>`,
+    "",
+    `К выплате Семёну: <b>${formatRub(Math.max(0, semToPay))}</b>`,
+    `К выплате Егору: <b>${formatRub(Math.max(0, egorToPay))}</b>`,
+  ].join("\n"));
 }
 
-async function sendToday(fromId: number) {
-  const supabase = await createSupabaseAdmin();
-  const today = new Date().toISOString().slice(0, 10);
-  const { data } = await supabase
-    .from("deals")
-    .select("*")
-    .eq("date", today)
-    .order("created_at", { ascending: false });
-
-  const deals = (data ?? []) as Deal[];
-
-  if (deals.length === 0) {
-    await sendBotMessage(
-      fromId,
-      `📅 <b>Сегодня</b>\n\nНи одной сделки. Звони студентам, давай работать 💪`,
-    );
-    return;
+// ─── webhook ───
+export async function POST(req: Request): Promise<NextResponse> {
+  // 1) секрет вебхука
+  if (WEBHOOK_SECRET) {
+    const got = req.headers.get("x-telegram-bot-api-secret-token");
+    if (got !== WEBHOOK_SECRET) return new NextResponse("forbidden", { status: 401 });
   }
 
-  const profit = deals.reduce((s, d) => s + (d.profit_rub ?? 0), 0);
-  const revenue = deals.reduce((s, d) => s + (d.student_pays_rub ?? 0), 0);
+  let update: TgUpdate;
+  try { update = (await req.json()) as TgUpdate; }
+  catch { return NextResponse.json({ ok: true }); }
 
-  let txt = `📅 <b>Сегодня — ${deals.length} ${pluralDeals(deals.length)}</b>\n\n`;
-  for (const d of deals.slice(0, 5)) {
-    txt += `• ${d.student_name} — ${fmtRub(d.profit_rub ?? 0)} (${d.amount_cny} ¥)\n`;
+  const msg = update.message ?? update.edited_message;
+  const text = msg?.text;
+  if (!msg || !text) return NextResponse.json({ ok: true });
+
+  const chatId = msg.chat.id;
+  const chatType = msg.chat.type;
+  const fromId = msg.from?.id;
+
+  // 2) белый список пользователей — иначе тишина
+  if (!fromId || !isAllowedTelegramId(fromId)) return NextResponse.json({ ok: true });
+
+  if (!text.startsWith("/")) return NextResponse.json({ ok: true });
+  const rawCmd = text.trim().split(/\s+/)[0];
+  const args = text.trim().split(/\s+/).slice(1);
+  const cmd = rawCmd.split("@")[0].toLowerCase();
+
+  // /chatid и /help — всегда (для настройки), уже под белым списком
+  if (cmd === "/chatid") {
+    await reply(chatId, `chat_id этого чата: <code>${chatId}</code>\nтип: ${chatType}`);
+    return NextResponse.json({ ok: true });
   }
-  txt += `\n💰 Оборот: <b>${fmtRub(revenue)}</b>\n📈 Прибыль: <b>${fmtRub(profit)}</b>`;
-
-  await sendBotMessage(fromId, txt);
-}
-
-async function sendLast(fromId: number) {
-  const supabase = await createSupabaseAdmin();
-  const { data } = await supabase
-    .from("deals")
-    .select("*")
-    .order("date", { ascending: false })
-    .order("created_at", { ascending: false })
-    .limit(5);
-
-  const deals = (data ?? []) as Deal[];
-
-  if (deals.length === 0) {
-    await sendBotMessage(fromId, `📋 Сделок пока нет. Это исправимо.`);
-    return;
-  }
-
-  let txt = `📋 <b>Последние ${deals.length} ${pluralDeals(deals.length)}</b>\n\n`;
-  for (const d of deals) {
-    const status = statusEmoji(d.status);
-    txt += `${status} <b>${d.student_name}</b> · ${fmtDate(d.date)}\n` +
-           `   ${d.amount_cny} ¥ → ${fmtRub(d.profit_rub ?? 0)} прибыли\n\n`;
+  if (cmd === "/start" || cmd === "/help" || cmd === "/помощь") {
+    await reply(chatId, helpText());
+    return NextResponse.json({ ok: true });
   }
 
-  await sendBotMessage(fromId, txt);
-}
+  // 3) авторизация чата для команд с данными
+  const chatOk = chatType === "private" ||
+    ((chatType === "group" || chatType === "supergroup") && allowedChatIds().includes(chatId));
+  if (!chatOk) {
+    await reply(chatId, `Эта группа не авторизована.\nchat_id: <code>${chatId}</code>\nДобавь его в ALLOWED_CHAT_IDS.`);
+    return NextResponse.json({ ok: true });
+  }
 
-async function sendHelp(fromId: number) {
-  await sendBotMessage(
-    fromId,
-    `🦣 <b>Мамонтёнок · Команды бота</b>\n\n` +
-      `/login — ссылка на вход в аппу\n` +
-      `/balance — остаток на АТБ и долги\n` +
-      `/today — сделки сегодня\n` +
-      `/last — последние 5 сделок\n` +
-      `/help — этот список\n\n` +
-      `<i>А ещё я сам шлю пуши когда:</i>\n` +
-      `• ⚡ Появилась новая сделка\n` +
-      `• ✅ Сделку завершили\n` +
-      `• 💸 Кому-то сделали выплату\n\n` +
-      `Money never sleeps 💰`,
-  );
-}
-
-// ═══════════════════════════════════════════════════════════════════
-// HELPERS
-// ═══════════════════════════════════════════════════════════════════
-
-function fmtRub(n: number | null | undefined): string {
-  if (n == null) return "—";
-  return new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 0 }).format(n) + " ₽";
-}
-
-function fmtDate(iso: string): string {
-  const d = new Date(iso);
-  return new Intl.DateTimeFormat("ru-RU", { day: "2-digit", month: "short" }).format(d);
-}
-
-function statusEmoji(s: string): string {
-  return {
-    pending: "⏳",
-    received_rub: "💵",
-    qr_paid: "📱",
-    completed: "✅",
-    cancelled: "❌",
-  }[s] ?? "📋";
-}
-
-function pluralDeals(n: number): string {
-  const mod10 = n % 10;
-  const mod100 = n % 100;
-  if (mod10 === 1 && mod100 !== 11) return "сделка";
-  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) return "сделки";
-  return "сделок";
+  const sb = await createSupabaseAdmin();
+  try {
+    switch (cmd) {
+      case "/курс": case "/rate": await cmdRate(chatId, sb); break;
+      case "/обновить": case "/update": await cmdUpdate(chatId, sb); break;
+      case "/сделка": case "/deal": await cmdDeal(chatId, args, fromId, sb); break;
+      case "/сделки": case "/deals": await cmdDeals(chatId, args, sb); break;
+      case "/касса": case "/cash": case "/баланс": await cmdCash(chatId, sb); break;
+      default: await reply(chatId, "Не знаю такую команду. /help — список.");
+    }
+  } catch (e) {
+    console.error("[bot] handler error", e);
+    await reply(chatId, "⚠ Ошибка при обработке. Попробуй ещё раз.");
+  }
+  return NextResponse.json({ ok: true });
 }
