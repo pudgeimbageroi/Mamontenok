@@ -16,7 +16,6 @@ export default async function NewDealPage() {
   const markup = markupRes.data as MarkupSettings | null;
   const allRefs = (refsRes.data ?? []) as ReferenceItem[];
 
-  // Snapshot текущих курсов как дефолтные значения
   const today = new Date().toISOString().slice(0, 10);
   const atbRate = rates ? effectiveAtbRate(rates) : 0;
   const myRate = rates && markup ? computeMyRate(rates, markup) : 0;
@@ -33,7 +32,7 @@ export default async function NewDealPage() {
         atb_rate: atbRate,
         cbr_rate: rates?.cbr_rate ?? 0,
         my_rate: myRate,
-        status: "pending",
+        status: "completed",
         comment: "",
       }}
       refs={{
