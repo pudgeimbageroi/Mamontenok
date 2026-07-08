@@ -1,5 +1,13 @@
 import type { Config } from "tailwindcss";
 
+/**
+ * Палитра переведена на CSS-переменные (rgb triplets) — значения задаются
+ * в app/globals.css для :root (светлая) и .dark (тёмная).
+ * Компоненты по-прежнему используют ink, brand, white и т.д. — они просто
+ * «перекрашиваются» темой автоматически.
+ */
+const withVar = (v: string) => `rgb(var(${v}) / <alpha-value>)`;
+
 const config: Config = {
   darkMode: ["class"],
   content: [
@@ -15,44 +23,39 @@ const config: Config = {
     },
     extend: {
       colors: {
-        // ─── Брендовая палитра «Мамонтёнок» ───
+        // карточка/поверхность (bg-white → тема-зависимый surface)
+        white: withVar("--card"),
+        card: withVar("--card"),
+        surface: withVar("--ink-50"),
+
         brand: {
-          DEFAULT: "#0883FF",
-          50: "#EFF6FF",
-          100: "#DBEAFE",
-          200: "#BFDBFE",
-          300: "#93C5FD",
-          400: "#60A5FA",
-          500: "#0883FF",
-          600: "#0066CC",
-          700: "#1E40AF",
-          800: "#003D7A",
-          900: "#1E3A8A",
+          DEFAULT: withVar("--brand-500"),
+          50: withVar("--brand-50"),
+          100: withVar("--brand-100"),
+          200: withVar("--brand-200"),
+          300: withVar("--brand-300"),
+          400: withVar("--brand-400"),
+          500: withVar("--brand-500"),
+          600: withVar("--brand-600"),
+          700: withVar("--brand-700"),
+          800: withVar("--brand-800"),
+          900: withVar("--brand-900"),
         },
         ink: {
-          900: "#0F172A",
-          700: "#334155",
-          500: "#64748B",
-          300: "#CBD5E1",
-          200: "#E2E8F0",
-          100: "#F1F5F9",
-          50: "#F8FAFC",
+          900: withVar("--ink-900"),
+          700: withVar("--ink-700"),
+          500: withVar("--ink-500"),
+          300: withVar("--ink-300"),
+          200: withVar("--ink-200"),
+          100: withVar("--ink-100"),
+          50: withVar("--ink-50"),
         },
-        success: {
-          DEFAULT: "#047857",
-          bg: "#ECFDF5",
-        },
-        danger: {
-          DEFAULT: "#B91C1C",
-          bg: "#FEE2E2",
-        },
-        warning: {
-          DEFAULT: "#92400E",
-          bg: "#FEF3C7",
-        },
-        input: {
-          bg: "#FFFBEB",
-        },
+        success: { DEFAULT: withVar("--success"), bg: withVar("--success-bg") },
+        danger: { DEFAULT: withVar("--danger"), bg: withVar("--danger-bg") },
+        warning: { DEFAULT: withVar("--warning"), bg: withVar("--warning-bg") },
+        input: { bg: withVar("--input-bg") },
+
+        // shadcn-совместимые токены
         border: "hsl(var(--border))",
         background: "hsl(var(--background))",
         foreground: "hsl(var(--foreground))",
@@ -69,6 +72,9 @@ const config: Config = {
         lg: "0.75rem",
         md: "0.5rem",
         sm: "0.25rem",
+      },
+      boxShadow: {
+        card: "0 1px 2px 0 rgb(15 23 42 / 0.04)",
       },
     },
   },
