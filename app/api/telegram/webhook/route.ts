@@ -1,17 +1,14 @@
 /**
  * POST /api/telegram/webhook  —  путь: app/api/telegram/webhook/route.ts
  *
- * Telegram-бот Мамонтёнка v2:
- *   • команды на английском (/rate /update /deal /deals /card /edit /cancel /cash /help)
- *   • инлайн-кнопки (подтверждение сделки + смена статуса + отмена)
- *   • подтверждение перед записью (F7)
- *   • guardrail «не продать в минус» (F3)
- *   • редактирование и отмена сделок (F8)
- *   • живой, аккуратно свёрстанный копирайтинг
- * Расчёты — из @/lib/calc (совпадают с приложением). Backend тот же (Supabase).
+ * Telegram-бот Мамонтёнка v3:
+ *   • этапы убраны — сделки создаются сразу «Завершено» (без статус-кнопок)
+ *   • инлайн-подтверждение сделки (Создать / Отмена)
+ *   • guardrail «не в минус», /edit, /deals, /cash, живой копирайтинг
+ * Команды на английском (+ русские синонимы). Расчёты — из @/lib/calc.
  *
  * ENV: TELEGRAM_BOT_TOKEN, ALLOWED_TELEGRAM_IDS, TELEGRAM_WEBHOOK_SECRET,
- *      ALLOWED_CHAT_IDS, опц. ATB_PROXY_URL, опц. BOT_MIN_MARGIN_RUB (порог маржи).
+ *      ALLOWED_CHAT_IDS, опц. ATB_PROXY_URL, опц. BOT_MIN_MARGIN_RUB.
  */
 
 import { NextResponse } from "next/server";
@@ -19,7 +16,6 @@ import { createSupabaseAdmin } from "@/lib/supabase/server";
 import { isAllowedTelegramId } from "@/lib/telegram";
 import { computeMyRate, effectiveAtbRate } from "@/lib/calc";
 import { formatRub, formatDate } from "@/lib/utils";
-import { statusInfo } from "@/lib/deal-statuses";
 import type { RateRow, MarkupSettings } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -31,49 +27,38 @@ type Kb = { inline_keyboard: Array<Array<{ text: string; callback_data: string }
 
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN ?? "";
 const WEBHOOK_SECRET = process.env.TELEGRAM_WEBHOOK_SECRET ?? "";
-const ATB_PROXY_URL =
-  process.env.ATB_PROXY_URL ?? "https://functions.yandexcloud.net/d4eidj1qrgbd5odp1n1k";
+const ATB_PROXY_URL = process.env.ATB_PROXY_URL ?? "https://functions.yandexcloud.net/d4eidj1qrgbd5odp1n1k";
 const MIN_MARGIN = parseFloat(process.env.BOT_MIN_MARGIN_RUB ?? "1") || 0;
-
-const STATUS_BY_CODE: Record<string, string> = { r: "received_rub", q: "qr_paid", c: "completed" };
 
 interface TgChat { id: number; type: string }
 interface TgUser { id: number }
 interface TgMessage { message_id: number; chat: TgChat; from?: TgUser; text?: string }
 interface TgCallback { id: string; from: TgUser; message?: TgMessage; data?: string }
 interface TgUpdate { message?: TgMessage; edited_message?: TgMessage; callback_query?: TgCallback }
-
 interface DealRow {
-  id: string; status: string; student_name: string; amount_cny: number;
-  my_rate: number; atb_rate: number; date: string;
+  id: string; student_name: string; amount_cny: number; my_rate: number; atb_rate: number; date: string;
   student_pays_rub: number; atb_outflow_rub: number; profit_rub: number; my_share_rub: number;
 }
 
 function allowedChatIds(): number[] {
   return (process.env.ALLOWED_CHAT_IDS ?? "").split(",").map((s) => s.trim()).filter(Boolean).map(Number);
 }
-
-// ─── форматирование ───
-function esc(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
-const money = (n: number | null | undefined): string => formatRub(n);
-const cny = (n: number): string => new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 0 }).format(n) + " ¥";
-const rate2 = (n: number | null | undefined): string => (n == null || isNaN(n) ? "—" : n.toFixed(2));
-const signed = (n: number): string => (n >= 0 ? "+" : "") + n.toFixed(2);
+function esc(s: string): string { return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+const money = (n: number | null | undefined) => formatRub(n);
+const cny = (n: number) => new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 0 }).format(n) + " ¥";
+const rate2 = (n: number | null | undefined) => (n == null || isNaN(n) ? "—" : n.toFixed(2));
+const signed = (n: number) => (n >= 0 ? "+" : "") + n.toFixed(2);
 function parseNum(s: string): number | null {
   if (!s) return null;
   const n = parseFloat(s.replace(",", ".").replace(/\s/g, ""));
   return isFinite(n) ? n : null;
 }
-/** моноширинная табличка «метка … значение» для читаемости */
 function tbl(rows: Array<[string, string]>): string {
   const lw = Math.max(...rows.map((r) => r[0].length));
   const vw = Math.max(...rows.map((r) => r[1].length));
   return "<pre>" + rows.map(([l, v]) => `${l.padEnd(lw)}  ${v.padStart(vw)}`).join("\n") + "</pre>";
 }
 
-// ─── Telegram API ───
 async function tg(method: string, payload: Record<string, unknown>): Promise<void> {
   try {
     await fetch(`https://api.telegram.org/bot${TOKEN}/${method}`, {
@@ -91,7 +76,6 @@ function ackCb(id: string, text?: string): Promise<void> {
   return tg("answerCallbackQuery", { callback_query_id: id, ...(text ? { text } : {}) });
 }
 
-// ─── доступ к данным ───
 async function getRates(sb: SB): Promise<RateRow | null> {
   const { data } = await sb.from("rates").select("*").order("fetched_at", { ascending: false }).limit(1).maybeSingle();
   return (data as RateRow) ?? null;
@@ -105,29 +89,16 @@ async function getProfileId(sb: SB, telegramId: number): Promise<string | null> 
   return (data as { id: string } | null)?.id ?? null;
 }
 
-// ─── карточки/кнопки сделки ───
-function dealKb(id: string): Kb {
-  return { inline_keyboard: [
-    [{ text: "💰 Получены ₽", callback_data: `ds:${id}:r` }, { text: "📤 QR оплачен", callback_data: `ds:${id}:q` }],
-    [{ text: "✅ Завершить", callback_data: `ds:${id}:c` }, { text: "❌ Отменить", callback_data: `dc:${id}` }],
-  ] };
-}
 function dealCard(d: DealRow, header = "🧾 Сделка"): string {
-  const st = statusInfo(d.status);
   return [
     `<b>${header}</b>`,
     "",
-    `👤 <b>${esc(d.student_name)}</b> · ${cny(d.amount_cny)}`,
-    tbl([
-      ["Прибыль", money(d.profit_rub)],
-      ["Тебе / Егору", money(d.my_share_rub)],
-    ]),
-    `📍 <b>${esc(st.label)}</b>`,
+    `👤 <b>${esc(d.student_name)}</b> · ${cny(d.amount_cny)} · курс ${rate2(d.my_rate)}`,
+    tbl([["Прибыль", money(d.profit_rub)], ["Тебе / Егору", money(d.my_share_rub)]]),
     `<code>${d.id}</code>`,
   ].join("\n");
 }
 
-// ─── команды ───
 function helpText(): string {
   return [
     "<b>🦣 Мамонтёнок — на связи</b>",
@@ -136,17 +107,14 @@ function helpText(): string {
     "/rate — курс прямо сейчас",
     "/update — подтянуть свежий из АТБ",
     "",
-    "<b>Сделки</b>",
+    "<b>Сделки</b>  (все создаются как «Завершено»)",
     "/deal Иван 5000 — новая (спрошу подтверждение)",
     "/deals — последние",
-    "/card <i>id</i> — карточка с кнопками",
-    "/edit <i>id</i> amount=5200 rate=12.9 status=done",
-    "/cancel <i>id</i> — отменить",
+    "/card <i>id</i> — карточка сделки",
+    "/edit <i>id</i> amount=5200 rate=12.9",
     "",
     "<b>Деньги</b>",
     "/cash — касса и доли",
-    "",
-    "<i>id жми в карточке — скопируется сам.</i>",
   ].join("\n");
 }
 
@@ -154,23 +122,17 @@ function rateBlock(rates: RateRow, markup: MarkupSettings, header: string): stri
   const my = computeMyRate(rates, markup);
   const atb = effectiveAtbRate(rates);
   const ppy = my - atb;
-  const mode = markup.mode === "percent" ? `наценка ${markup.percent_value}%`
-    : markup.mode === "custom_rate" ? "свой курс" : "фикс. ₽";
+  const mode = markup.mode === "percent" ? `наценка ${markup.percent_value}%` : markup.mode === "custom_rate" ? "свой курс" : "фикс. ₽";
   return [
     `<b>${header}</b>`,
-    tbl([
-      ["ЦБ РФ", rate2(rates.cbr_rate)],
-      ["АТБ факт.", rate2(atb)],
-      ["Мой курс", `${rate2(my)} ₽/¥`],
-      ["Маржа", `${signed(ppy)} ₽/¥`],
-    ]),
+    tbl([["ЦБ РФ", rate2(rates.cbr_rate)], ["АТБ факт.", rate2(atb)], ["Мой курс", `${rate2(my)} ₽/¥`], ["Маржа", `${signed(ppy)} ₽/¥`]]),
     `<i>${mode} · обновлён ${formatDate(rates.fetched_at)}</i>`,
   ].join("\n");
 }
 
 async function cmdRate(chatId: number, sb: SB): Promise<void> {
   const rates = await getRates(sb); const markup = await getMarkup(sb);
-  if (!rates || !markup) { await reply(chatId, "Пока нет курса. Жми /update — подтяну свежий."); return; }
+  if (!rates || !markup) { await reply(chatId, "Пока нет курса. Жми /update."); return; }
   await reply(chatId, rateBlock(rates, markup, "📊 Курс на сейчас"));
 }
 
@@ -179,16 +141,16 @@ async function cmdUpdate(chatId: number, sb: SB): Promise<void> {
   let json: { data?: Array<{ charCode?: string; atbRate?: { buyingRate?: number }; cbrRate?: { rate?: number } }> };
   try {
     const r = await fetch(ATB_PROXY_URL, { headers: { Accept: "application/json" }, cache: "no-store", signal: AbortSignal.timeout(12000) });
-    if (!r.ok) { await reply(chatId, `Прокси-функция ответила ${r.status}. Попробуй ещё раз.`); return; }
+    if (!r.ok) { await reply(chatId, `Прокси-функция ответила ${r.status}.`); return; }
     json = await r.json();
-  } catch { await reply(chatId, "Не достучался до курса. Попробуй чуть позже."); return; }
+  } catch { await reply(chatId, "Не достучался до курса. Попробуй позже."); return; }
   const c = (json.data ?? []).find((x) => x?.charCode === "CNY");
   const buying = c?.atbRate?.buyingRate; const cbr = c?.cbrRate?.rate;
   if (!buying || buying <= 0) { await reply(chatId, "В ответе не нашёл курс CNY."); return; }
   const { data: prev } = await sb.from("rates").select("atb_actual_rate").order("fetched_at", { ascending: false }).limit(1).maybeSingle();
   const prevActual = (prev as { atb_actual_rate: number | null } | null)?.atb_actual_rate ?? null;
   const { error } = await sb.from("rates").insert({ cbr_rate: cbr ?? null, atb_app_rate: buying, atb_actual_rate: prevActual, source: "atb_api" });
-  if (error) { await reply(chatId, "Курс получил, но не смог записать в базу."); return; }
+  if (error) { await reply(chatId, "Курс получил, но не записал в базу."); return; }
   const rates = await getRates(sb); const markup = await getMarkup(sb);
   if (rates && markup) await reply(chatId, rateBlock(rates, markup, "✅ Готово — курс обновлён"));
 }
@@ -208,35 +170,24 @@ async function cmdDeal(chatId: number, args: string[], sb: SB): Promise<void> {
   if (atb <= 0) { await reply(chatId, "Курс АТБ не задан. Жми /update."); return; }
   const my = rateOverride && rateOverride > 0 ? rateOverride : computeMyRate(rates, markup);
   const ppy = my - atb;
-
-  // guardrail: в минус — не даём
   if (ppy <= 0) {
     await reply(chatId, [
-      "<b>🚫 Так нельзя — это в минус</b>",
-      "",
-      `Твой курс <b>${rate2(my)}</b> ниже курса АТБ <b>${rate2(atb)}</b> → ${signed(ppy)} ₽ с юаня.`,
-      "",
+      "<b>🚫 Так нельзя — это в минус</b>", "",
+      `Твой курс <b>${rate2(my)}</b> ниже курса АТБ <b>${rate2(atb)}</b> → ${signed(ppy)} ₽ с юаня.`, "",
       "Обнови курс /update или задай вручную:",
       "<code>/deal " + esc(name) + " " + amount + " " + (atb + Math.max(MIN_MARGIN, 0.5)).toFixed(2) + "</code>",
     ].join("\n"));
     return;
   }
-
   const studentPays = amount * my, atbOut = amount * atb, profit = studentPays - atbOut, share = profit / 2;
   const cbrStr = rates.cbr_rate != null ? rates.cbr_rate.toFixed(4) : "";
   const warn = ppy < MIN_MARGIN ? `⚠️ <b>Маржа тонкая</b> — ${signed(ppy)} ₽/¥. Точно создаём?\n\n` : "";
   const text = warn + [
-    "<b>🧮 Новая сделка — проверь</b>",
-    "",
+    "<b>🧮 Новая сделка — проверь</b>", "",
     `👤 <b>${esc(name)}</b>`,
     `💴 ${cny(amount)} по курсу <b>${rate2(my)}</b> ₽/¥`,
-    tbl([
-      ["Студент платит", money(studentPays)],
-      ["Уйдёт в Китай", money(atbOut)],
-      ["Прибыль", `${money(profit)}  (${signed(ppy)} ₽/¥)`],
-      ["Тебе / Егору", money(share)],
-    ]),
-    "Создаём?",
+    tbl([["Студент платит", money(studentPays)], ["Уйдёт в Китай", money(atbOut)], ["Прибыль", `${money(profit)}  (${signed(ppy)} ₽/¥)`], ["Тебе / Егору", money(share)]]),
+    "Создаём? (сделка сразу «Завершено»)",
   ].join("\n");
   const kb: Kb = { inline_keyboard: [[
     { text: "✅ Да, создать", callback_data: `nc|${amount}|${my.toFixed(4)}|${atb.toFixed(4)}|${cbrStr}` },
@@ -249,59 +200,37 @@ async function cmdDeals(chatId: number, args: string[], sb: SB): Promise<void> {
   let n = parseInt(args[0] ?? "", 10); if (!isFinite(n) || n <= 0) n = 5; n = Math.min(n, 15);
   const { data } = await sb.from("deals").select("*").order("created_at", { ascending: false }).limit(n);
   const rows = (data as DealRow[] | null) ?? [];
-  if (rows.length === 0) { await reply(chatId, "Сделок пока нет. Заведи первую: <code>/deal Иван 5000</code>"); return; }
-  const blocks = rows.map((d) => {
-    const st = statusInfo(d.status);
-    return [
-      `👤 <b>${esc(d.student_name)}</b> · ${cny(d.amount_cny)} · ${money(d.profit_rub)}`,
-      `📍 ${esc(st.label)} · ${formatDate(d.date)}`,
-      `<code>${d.id}</code>`,
-    ].join("\n");
-  });
+  if (rows.length === 0) { await reply(chatId, "Сделок пока нет. Заведи: <code>/deal Иван 5000</code>"); return; }
+  const blocks = rows.map((d) => [
+    `👤 <b>${esc(d.student_name)}</b> · ${cny(d.amount_cny)} · ${money(d.profit_rub)}`,
+    `курс ${rate2(d.my_rate)} · ${formatDate(d.date)}`,
+    `<code>${d.id}</code>`,
+  ].join("\n"));
   await reply(chatId, `<b>🧾 Последние сделки (${rows.length})</b>\n\n` + blocks.join("\n———\n"));
 }
 
 async function cmdCard(chatId: number, args: string[], sb: SB): Promise<void> {
   const id = args[0];
-  if (!id) { await reply(chatId, "Формат: <code>/card id</code> (id бери из /deals)."); return; }
+  if (!id) { await reply(chatId, "Формат: <code>/card id</code> (id из /deals)."); return; }
   const { data } = await sb.from("deals").select("*").eq("id", id).maybeSingle();
   if (!data) { await reply(chatId, "Не нашёл такую сделку."); return; }
-  await reply(chatId, dealCard(data as DealRow), dealKb(id));
+  await reply(chatId, dealCard(data as DealRow));
 }
 
-async function cmdCancel(chatId: number, args: string[], sb: SB): Promise<void> {
-  const id = args[0];
-  if (!id) { await reply(chatId, "Формат: <code>/cancel id</code>."); return; }
-  const { data, error } = await sb.from("deals").update({ status: "cancelled" }).eq("id", id).select().single();
-  if (error || !data) { await reply(chatId, "Не получилось отменить — проверь id."); return; }
-  await reply(chatId, dealCard(data as DealRow, "❌ Сделка отменена"));
-}
-
-function normStatus(s: string): string | null {
-  const m: Record<string, string> = {
-    pending: "pending", received: "received_rub", received_rub: "received_rub", rub: "received_rub",
-    qr: "qr_paid", qr_paid: "qr_paid", done: "completed", completed: "completed",
-    cancel: "cancelled", cancelled: "cancelled",
-  };
-  return m[s.toLowerCase()] ?? null;
-}
 async function cmdEdit(chatId: number, args: string[], sb: SB): Promise<void> {
   const id = args[0];
-  if (!id) { await reply(chatId, "Формат: <code>/edit id amount=5200 rate=12.9 status=done</code>"); return; }
+  if (!id) { await reply(chatId, "Формат: <code>/edit id amount=5200 rate=12.9</code>"); return; }
   const upd: Record<string, unknown> = {};
   for (const p of args.slice(1)) {
     const i = p.indexOf("="); if (i < 0) continue;
     const k = p.slice(0, i).toLowerCase(); const v = p.slice(i + 1);
     if (k === "amount") { const nn = parseNum(v); if (nn && nn > 0) upd.amount_cny = nn; }
     else if (k === "rate") { const nn = parseNum(v); if (nn && nn > 0) upd.my_rate = nn; }
-    else if (k === "status") { const s = normStatus(v); if (s) upd.status = s; }
   }
-  if (Object.keys(upd).length === 0) { await reply(chatId, "Нечего менять. Поля: amount, rate, status."); return; }
+  if (Object.keys(upd).length === 0) { await reply(chatId, "Нечего менять. Поля: amount, rate."); return; }
   const { data, error } = await sb.from("deals").update(upd).eq("id", id).select().single();
   if (error || !data) { await reply(chatId, "Не вышло изменить — проверь id."); return; }
-  const d = data as DealRow;
-  const warn = d.my_rate <= d.atb_rate ? "\n⚠️ Осторожно: курс ушёл в минус." : "";
-  await reply(chatId, dealCard(d, "✏️ Обновлено") + warn, dealKb(d.id));
+  await reply(chatId, dealCard(data as DealRow, "✏️ Обновлено"));
 }
 
 async function cmdCash(chatId: number, sb: SB): Promise<void> {
@@ -320,21 +249,12 @@ async function cmdCash(chatId: number, sb: SB): Promise<void> {
   const balance = income - outflow - wSem - wEgor - other;
   await reply(chatId, [
     "<b>💰 Касса</b>",
-    tbl([
-      ["На счёте АТБ", money(balance)],
-      ["Приход", money(income)],
-      ["Ушло в Китай", money(outflow)],
-      ["Прибыль", money(profit)],
-    ]),
+    tbl([["На счёте АТБ", money(balance)], ["Приход", money(income)], ["Ушло в Китай", money(outflow)], ["Прибыль", money(profit)]]),
     "<b>Доли 50 / 50</b>",
-    tbl([
-      ["Тебе к выплате", money(Math.max(0, profit / 2 - wSem))],
-      ["Егору к выплате", money(Math.max(0, profit / 2 - wEgor))],
-    ]),
+    tbl([["Тебе к выплате", money(Math.max(0, profit / 2 - wSem))], ["Егору к выплате", money(Math.max(0, profit / 2 - wEgor))]]),
   ].join("\n"));
 }
 
-// ─── обработка нажатий кнопок ───
 async function handleCallback(cq: TgCallback, sb: SB): Promise<void> {
   const fromId = cq.from?.id; const msg = cq.message;
   if (!fromId || !isAllowedTelegramId(fromId) || !msg) { await ackCb(cq.id); return; }
@@ -350,35 +270,17 @@ async function handleCallback(cq: TgCallback, sb: SB): Promise<void> {
     const name = (msg.text ?? "").split("\n").find((l) => l.trimStart().startsWith("👤"))?.replace(/^\s*👤\s*/, "").trim() || "—";
     const createdBy = await getProfileId(sb, fromId);
     const { data: d, error } = await sb.from("deals").insert({
-      student_name: name, amount_cny: amount, atb_rate: atb, cbr_rate: cbr, my_rate: my, status: "pending", created_by: createdBy,
+      student_name: name, amount_cny: amount, atb_rate: atb, cbr_rate: cbr, my_rate: my, status: "completed", created_by: createdBy,
     }).select().single();
     if (error || !d) { await ackCb(cq.id, "Ошибка"); return; }
     await ackCb(cq.id, "Создано ✅");
-    await editText(chatId, msg.message_id, dealCard(d as DealRow, "✅ Сделка создана"), dealKb((d as DealRow).id));
+    await editText(chatId, msg.message_id, dealCard(d as DealRow, "✅ Сделка создана"));
     return;
   }
   if (data === "nx") { await ackCb(cq.id, "Отменено"); await editText(chatId, msg.message_id, "❌ Черновик отменён."); return; }
-  if (data.startsWith("ds:")) {
-    const [, id, code] = data.split(":"); const status = STATUS_BY_CODE[code];
-    if (!status) { await ackCb(cq.id); return; }
-    const { data: d } = await sb.from("deals").update({ status }).eq("id", id).select().single();
-    if (!d) { await ackCb(cq.id, "Не найдено"); return; }
-    await ackCb(cq.id, statusInfo(status).label);
-    await editText(chatId, msg.message_id, dealCard(d as DealRow), dealKb(id));
-    return;
-  }
-  if (data.startsWith("dc:")) {
-    const id = data.slice(3);
-    const { data: d } = await sb.from("deals").update({ status: "cancelled" }).eq("id", id).select().single();
-    if (!d) { await ackCb(cq.id, "Не найдено"); return; }
-    await ackCb(cq.id, "Отменено");
-    await editText(chatId, msg.message_id, dealCard(d as DealRow, "❌ Сделка отменена"));
-    return;
-  }
   await ackCb(cq.id);
 }
 
-// ─── обработка сообщений ───
 async function handleMessage(msg: TgMessage, sb: SB): Promise<void> {
   const text = msg.text ?? "";
   const chatId = msg.chat.id; const chatType = msg.chat.type; const fromId = msg.from?.id;
@@ -394,14 +296,13 @@ async function handleMessage(msg: TgMessage, sb: SB): Promise<void> {
   if (!chatOk) { await reply(chatId, `Эта группа не авторизована.\nchat_id: <code>${chatId}</code> → добавь в ALLOWED_CHAT_IDS.`); return; }
 
   switch (cmd) {
-    case "/rate": await cmdRate(chatId, sb); break;
-    case "/update": await cmdUpdate(chatId, sb); break;
-    case "/deal": await cmdDeal(chatId, args, sb); break;
-    case "/deals": await cmdDeals(chatId, args, sb); break;
+    case "/rate": case "/курс": await cmdRate(chatId, sb); break;
+    case "/update": case "/обновить": await cmdUpdate(chatId, sb); break;
+    case "/deal": case "/сделка": await cmdDeal(chatId, args, sb); break;
+    case "/deals": case "/сделки": await cmdDeals(chatId, args, sb); break;
     case "/card": await cmdCard(chatId, args, sb); break;
     case "/edit": await cmdEdit(chatId, args, sb); break;
-    case "/cancel": await cmdCancel(chatId, args, sb); break;
-    case "/cash": await cmdCash(chatId, sb); break;
+    case "/cash": case "/касса": await cmdCash(chatId, sb); break;
     default: await reply(chatId, "Не знаю такую команду. /help — что я умею.");
   }
 }
@@ -412,14 +313,10 @@ export async function POST(req: Request): Promise<NextResponse> {
   }
   let update: TgUpdate;
   try { update = (await req.json()) as TgUpdate; } catch { return NextResponse.json({ ok: true }); }
-
   const sb = await createSupabaseAdmin();
   try {
     if (update.callback_query) await handleCallback(update.callback_query, sb);
-    else {
-      const msg = update.message ?? update.edited_message;
-      if (msg && msg.text) await handleMessage(msg, sb);
-    }
+    else { const msg = update.message ?? update.edited_message; if (msg && msg.text) await handleMessage(msg, sb); }
   } catch (e) { console.error("[bot] handler", e); }
   return NextResponse.json({ ok: true });
 }
