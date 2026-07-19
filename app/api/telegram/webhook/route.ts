@@ -172,17 +172,26 @@ async function handleLogin(fromId: number, displayName: string) {
     return NextResponse.json({ ok: true });
   }
 
-  const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "https://mamontenok.vercel.app";
+  const appUrl = getAppUrl();
   const link = `${appUrl}/api/auth/confirm?token=${token}`;
 
   await sendBotMessage(
     fromId,
     `🔗 <b>Ссылка для входа в браузере</b>\n\n` +
-      `${link}\n\n` +
+      `👉 <a href="${link}">Тапни чтобы войти</a>\n\n` +
       `<i>Работает 15 минут. Одноразовая — после использования сдохнет.</i>`,
     { disable_web_page_preview: true },
   );
   return NextResponse.json({ ok: true });
+}
+
+// Достаём URL приложения из env (несколько источников на случай если один пуст)
+function getAppUrl(): string {
+  const explicit = process.env.NEXT_PUBLIC_APP_URL?.trim();
+  if (explicit) return explicit.replace(/\/$/, "");
+  const vercelUrl = process.env.VERCEL_URL?.trim();
+  if (vercelUrl) return `https://${vercelUrl.replace(/\/$/, "")}`;
+  return "https://mamontenok.vercel.app";
 }
 
 // ═══════════════════════════════════════════════════════════════════
