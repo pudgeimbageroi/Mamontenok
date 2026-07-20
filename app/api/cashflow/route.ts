@@ -40,6 +40,7 @@ export async function POST(req: Request) {
       amount_rub: body.amount_rub,
       method: body.method ?? null,
       comment: body.comment ?? null,
+      channel: body.channel ?? null,
       created_by: session.profileId,
     })
     .select()

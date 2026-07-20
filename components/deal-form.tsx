@@ -3,9 +3,10 @@
 import { useState, useTransition, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { ArrowLeft, Trash2, Save, AlertTriangle } from "lucide-react";
+import { ArrowLeft, Trash2, Save, AlertTriangle, Building2, LineChart } from "lucide-react";
 import { cn, formatRub, formatCny } from "@/lib/utils";
-import type { ReferenceItem } from "@/lib/types";
+import { DEAL_STATUSES, type DealStatus } from "@/lib/deal-statuses";
+import type { Deal, ReferenceItem, Channel, MoexTicker } from "@/lib/types";
 
 const MIN_PROFIT_WARNING = 5000;
 
@@ -20,27 +21,41 @@ export type DealFormInitial = {
   atb_rate: number;
   cbr_rate: number;
   my_rate: number;
-  status: string;
+  status: DealStatus;
   comment: string;
+  channel?: Channel;
+  moex_ticker?: MoexTicker | null;
 };
 
 export function DealForm({
-  initial, refs, isEdit = false,
+  initial,
+  refs,
+  isEdit = false,
 }: {
   initial: DealFormInitial;
   refs: { universities: ReferenceItem[]; cities: ReferenceItem[]; purposes: ReferenceItem[] };
   isEdit?: boolean;
 }) {
   const router = useRouter();
-  const [form, setForm] = useState(initial);
+  const [form, setForm] = useState({
+    ...initial,
+    channel: (initial.channel ?? "atb") as Channel,
+    moex_ticker: (initial.moex_ticker ?? null) as MoexTicker | null,
+  });
   const [saving, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
 
+  // Расчёты live
   const calcs = useMemo(() => {
     const studentPays = form.amount_cny * form.my_rate;
     const atbOutflow = form.amount_cny * form.atb_rate;
     const profit = studentPays - atbOutflow;
-    return { studentPays, atbOutflow, profit, share: profit / 2 };
+    return {
+      studentPays,
+      atbOutflow,
+      profit,
+      share: profit / 2,
+    };
   }, [form.amount_cny, form.my_rate, form.atb_rate]);
 
   function set<K extends keyof typeof form>(key: K, value: typeof form[K]) {
@@ -64,19 +79,26 @@ export function DealForm({
       atb_rate: form.atb_rate,
       cbr_rate: form.cbr_rate || null,
       my_rate: form.my_rate,
-      status: "completed",
+      status: form.status,
       comment: form.comment.trim() || null,
+      channel: form.channel,
+      moex_ticker: form.channel === "rshb" ? form.moex_ticker : null,
     };
 
     startTransition(async () => {
       try {
         const url = isEdit ? `/api/deals/${initial.id}` : "/api/deals";
+        const method = isEdit ? "PATCH" : "POST";
         const res = await fetch(url, {
-          method: isEdit ? "PATCH" : "POST",
+          method,
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
         });
-        if (!res.ok) { const data = await res.json(); setError(data.error ?? "Не удалось сохранить"); return; }
+        if (!res.ok) {
+          const data = await res.json();
+          setError(data.error ?? "Не удалось сохранить");
+          return;
+        }
         router.push("/app/deals");
         router.refresh();
       } catch (err) {
@@ -90,115 +112,319 @@ export function DealForm({
     if (!confirm("Удалить сделку? Это действие нельзя отменить.")) return;
     startTransition(async () => {
       const res = await fetch(`/api/deals/${initial.id}`, { method: "DELETE" });
-      if (res.ok) { router.push("/app/deals"); router.refresh(); }
-      else { const data = await res.json(); setError(data.error ?? "Не удалось удалить"); }
+      if (res.ok) {
+        router.push("/app/deals");
+        router.refresh();
+      } else {
+        const data = await res.json();
+        setError(data.error ?? "Не удалось удалить");
+      }
     });
   }
 
-  const profitColor = calcs.profit >= MIN_PROFIT_WARNING ? "text-success" : calcs.profit < 0 ? "text-danger" : "text-warning";
-
   return (
-    <div className="space-y-5 max-w-3xl mx-auto">
+    <div className="space-y-6 max-w-3xl mx-auto">
       <div>
-        <Link href="/app/deals" className="inline-flex items-center gap-2 text-sm text-ink-500 hover:text-ink-900 mb-3 transition-colors">
+        <Link
+          href="/app/deals"
+          className="inline-flex items-center gap-2 text-sm text-ink-500 hover:text-ink-700 mb-3"
+        >
           <ArrowLeft className="size-4" /> К списку сделок
         </Link>
-        <h1 className="text-2xl lg:text-3xl font-display font-bold tracking-tight text-ink-900">{isEdit ? "Сделка" : "Новая сделка"}</h1>
+        <h1 className="text-3xl lg:text-4xl font-display font-bold tracking-tight text-ink-900">
+          {isEdit ? "Сделка" : "Новая сделка"}
+        </h1>
       </div>
 
-      {/* Студент */}
-      <div className="card p-5 space-y-4">
-        <h2 className="section-title">Информация о студенте</h2>
+      {/* Основные поля */}
+      <div className="bg-white border border-ink-200 rounded-2xl p-5 space-y-4">
+        <h2 className="font-display font-semibold text-ink-900">Информация о студенте</h2>
+
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <Field label="Дата сделки" required>
-            <input type="date" value={form.date} onChange={(e: React.ChangeEvent<HTMLInputElement>) => set("date", e.target.value)} className="input tabular-nums" />
+            <input
+              type="date" value={form.date} onChange={(e) => set("date", e.target.value)}
+              className={inputCls}
+            />
           </Field>
           <Field label="Имя студента" required>
-            <input type="text" value={form.student_name} onChange={(e: React.ChangeEvent<HTMLInputElement>) => set("student_name", e.target.value)} placeholder="Иван Иванов" className="input" />
+            <input
+              type="text" value={form.student_name} onChange={(e) => set("student_name", e.target.value)}
+              placeholder="Иван Иванов"
+              className={inputCls}
+            />
           </Field>
         </div>
+
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <Field label="Университет">
-            <Combobox value={form.university} onChange={(v) => set("university", v)} options={refs.universities.map((r) => r.value)} listId="universities" placeholder="Донхуа" />
+            <ComboboxInput
+              value={form.university}
+              onChange={(v) => set("university", v)}
+              options={refs.universities.map((r) => r.value)}
+              listId="universities"
+              placeholder="Донхуа"
+            />
           </Field>
           <Field label="Город">
-            <Combobox value={form.city} onChange={(v) => set("city", v)} options={refs.cities.map((r) => r.value)} listId="cities" placeholder="Шанхай" />
+            <ComboboxInput
+              value={form.city}
+              onChange={(v) => set("city", v)}
+              options={refs.cities.map((r) => r.value)}
+              listId="cities"
+              placeholder="Шанхай"
+            />
           </Field>
           <Field label="Назначение">
-            <Combobox value={form.purpose} onChange={(v) => set("purpose", v)} options={refs.purposes.map((r) => r.value)} listId="purposes" placeholder="学费" />
+            <ComboboxInput
+              value={form.purpose}
+              onChange={(v) => set("purpose", v)}
+              options={refs.purposes.map((r) => r.value)}
+              listId="purposes"
+              placeholder="学费"
+            />
           </Field>
         </div>
       </div>
 
-      {/* Сумма и курсы */}
-      <div className="card p-5 space-y-4">
-        <h2 className="section-title">Сумма и курсы <span className="text-ink-500 font-normal text-sm">(фиксируются на момент сделки)</span></h2>
-        <Field label="Сумма ¥" required>
-          <div className="flex items-baseline gap-2">
-            <input type="number" step="0.01" value={form.amount_cny || ""} onChange={(e: React.ChangeEvent<HTMLInputElement>) => set("amount_cny", parseFloat(e.target.value) || 0)} className="input text-2xl font-display font-bold tabular-nums" />
-            <span className="font-display font-bold text-xl text-ink-300">¥</span>
-          </div>
-        </Field>
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-          <Field label="Курс ЦБ" hint="на дату сделки">
-            <input type="number" step="0.0001" value={form.cbr_rate || ""} onChange={(e: React.ChangeEvent<HTMLInputElement>) => set("cbr_rate", parseFloat(e.target.value) || 0)} className="input tabular-nums" />
-          </Field>
-          <Field label="Курс АТБ факт." hint="по которому списали" required>
-            <input type="number" step="0.0001" value={form.atb_rate || ""} onChange={(e: React.ChangeEvent<HTMLInputElement>) => set("atb_rate", parseFloat(e.target.value) || 0)} className="input tabular-nums" />
-          </Field>
-          <Field label="Наш курс" hint="который дали студенту" required>
-            <input type="number" step="0.0001" value={form.my_rate || ""} onChange={(e: React.ChangeEvent<HTMLInputElement>) => set("my_rate", parseFloat(e.target.value) || 0)} className="input tabular-nums" />
-          </Field>
+      {/* Канал закупки */}
+      <div className="bg-white border border-ink-200 rounded-2xl p-5 space-y-4">
+        <h2 className="font-display font-semibold text-ink-900">Канал закупки юаней</h2>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <button
+            type="button"
+            onClick={() => set("channel", "atb")}
+            className={cn(
+              "flex items-center gap-3 border-2 rounded-xl px-4 py-3 text-left transition-all",
+              form.channel === "atb"
+                ? "border-brand-500 bg-brand-50 ring-4 ring-brand-100"
+                : "border-ink-200 hover:border-ink-300 bg-white",
+            )}
+          >
+            <div className={cn(
+              "size-9 rounded-lg flex items-center justify-center",
+              form.channel === "atb" ? "bg-brand-500 text-white" : "bg-ink-100 text-ink-500",
+            )}>
+              <Building2 className="size-5" />
+            </div>
+            <div>
+              <p className="text-sm font-display font-bold text-ink-900">АТБ Bank</p>
+              <p className="text-xs text-ink-500">через приложение</p>
+            </div>
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              set("channel", "rshb");
+              if (!form.moex_ticker) set("moex_ticker", "CNYRUB_TMS");
+            }}
+            className={cn(
+              "flex items-center gap-3 border-2 rounded-xl px-4 py-3 text-left transition-all",
+              form.channel === "rshb"
+                ? "border-brand-500 bg-brand-50 ring-4 ring-brand-100"
+                : "border-ink-200 hover:border-ink-300 bg-white",
+            )}
+          >
+            <div className={cn(
+              "size-9 rounded-lg flex items-center justify-center",
+              form.channel === "rshb" ? "bg-brand-500 text-white" : "bg-ink-100 text-ink-500",
+            )}>
+              <LineChart className="size-5" />
+            </div>
+            <div>
+              <p className="text-sm font-display font-bold text-ink-900">Биржа РСХБ</p>
+              <p className="text-xs text-ink-500">тариф Инвестор</p>
+            </div>
+          </button>
         </div>
-      </div>
-
-      {/* Расчёт */}
-      <div className="card p-5">
-        <p className="muted-label mb-3">Расчёт сделки</p>
-        <div className="grid grid-cols-2 gap-4">
-          <Kpi label="Студент платит" value={formatRub(calcs.studentPays)} />
-          <Kpi label="Уйдёт в АТБ" value={formatRub(calcs.atbOutflow)} />
-          <Kpi label="Прибыль" value={formatRub(calcs.profit)} sub={form.atb_rate > 0 ? "≈ " + formatCny(calcs.profit / form.atb_rate) : undefined} big color={profitColor} />
-          <Kpi label="На одного (доля)" value={formatRub(calcs.share)} sub={form.atb_rate > 0 ? "≈ " + formatCny(calcs.share / form.atb_rate) : undefined} big />
-        </div>
-        {calcs.profit > 0 && calcs.profit < MIN_PROFIT_WARNING && (
-          <div className="flex items-center gap-2 mt-4 text-xs font-medium text-warning">
-            <AlertTriangle className="size-4" /> Маржа тонкая: прибыль меньше 5 000 ₽
+        {form.channel === "rshb" && (
+          <div>
+            <label className="block text-xs uppercase tracking-wider text-ink-500 font-medium mb-2">
+              Тикер MOEX
+            </label>
+            <div className="grid grid-cols-3 gap-2">
+              {(["CNYRUB_TMS", "CNYRUB_TOD", "CNYRUB_TOM"] as MoexTicker[]).map((t) => (
+                <button
+                  key={t}
+                  type="button"
+                  onClick={() => set("moex_ticker", t)}
+                  className={cn(
+                    "text-xs font-medium px-3 py-2 rounded-lg transition-colors border",
+                    form.moex_ticker === t
+                      ? "bg-brand-500 text-white border-brand-500"
+                      : "bg-white border-ink-200 text-ink-700 hover:border-ink-300",
+                  )}
+                >
+                  {t.replace("CNYRUB_", "")}
+                </button>
+              ))}
+            </div>
           </div>
         )}
       </div>
 
-      {/* Комментарий */}
-      <div className="card p-5">
+      {/* Курсы и сумма */}
+      <div className="bg-white border border-ink-200 rounded-2xl p-5 space-y-4">
+        <h2 className="font-display font-semibold text-ink-900">Сумма и курсы (зафиксированы на момент сделки)</h2>
+
+        <Field label="Сумма ¥" required>
+          <div className="flex items-baseline gap-2">
+            <input
+              type="number" step="0.01" value={form.amount_cny || ""}
+              onChange={(e) => set("amount_cny", parseFloat(e.target.value) || 0)}
+              className={cn(inputCls, "text-2xl font-display font-bold")}
+            />
+            <span className="font-display font-bold text-xl text-ink-400">¥</span>
+          </div>
+        </Field>
+
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <Field label="Курс ЦБ (фикс)" hint="на дату сделки">
+            <input
+              type="number" step="0.0001" value={form.cbr_rate || ""}
+              onChange={(e) => set("cbr_rate", parseFloat(e.target.value) || 0)}
+              className={inputCls}
+            />
+          </Field>
+          <Field
+            label={form.channel === "rshb" ? "Курс РСХБ" : "Курс АТБ"}
+            hint="по которому списали" required
+          >
+            <input
+              type="number" step="0.0001" value={form.atb_rate || ""}
+              onChange={(e) => set("atb_rate", parseFloat(e.target.value) || 0)}
+              className={inputCls}
+            />
+          </Field>
+          <Field label="Мой курс" hint="который дал студенту" required>
+            <input
+              type="number" step="0.0001" value={form.my_rate || ""}
+              onChange={(e) => set("my_rate", parseFloat(e.target.value) || 0)}
+              className={inputCls}
+            />
+          </Field>
+        </div>
+      </div>
+
+      {/* Превью расчёта */}
+      <div className={cn(
+        "bg-gradient-to-br rounded-2xl p-5 text-white shadow-xl",
+        calcs.profit >= MIN_PROFIT_WARNING ? "from-success to-emerald-700" :
+        calcs.profit < 0 ? "from-danger to-red-700" :
+        calcs.profit > 0 ? "from-amber-500 to-amber-700" :
+        "from-ink-500 to-ink-700"
+      )}>
+        <p className="text-xs uppercase tracking-wider opacity-80 font-medium mb-3">Расчёт сделки</p>
+        <div className="grid grid-cols-2 gap-3">
+          <KpiItem label="Студент платит" value={formatRub(calcs.studentPays)} />
+          <KpiItem
+            label={form.channel === "rshb" ? "Уйдёт с РСХБ" : "Уйдёт с АТБ"}
+            value={formatRub(calcs.atbOutflow)}
+          />
+          <KpiItem
+            label="Прибыль"
+            value={formatRub(calcs.profit)}
+            subvalue={form.atb_rate > 0 ? `≈ ${formatCny(calcs.profit / form.atb_rate)}` : undefined}
+            accent
+          />
+          <KpiItem
+            label="🪨 На одного неандертальца"
+            value={formatRub(calcs.share)}
+            subvalue={form.atb_rate > 0 ? `≈ ${formatCny(calcs.share / form.atb_rate)}` : undefined}
+            accent
+          />
+        </div>
+        {calcs.profit > 0 && calcs.profit < MIN_PROFIT_WARNING && (
+          <div className="flex items-center gap-2 mt-4 text-xs font-medium">
+            <AlertTriangle className="size-4" /> 注意: прибыль меньше 5 000 ₽
+          </div>
+        )}
+      </div>
+
+      {/* Статус и комментарий */}
+      <div className="bg-white border border-ink-200 rounded-2xl p-5 space-y-4">
+        <Field label="Статус">
+          <div className="flex flex-wrap gap-2">
+            {DEAL_STATUSES.map((s) => (
+              <button
+                key={s.value}
+                type="button"
+                onClick={() => set("status", s.value)}
+                className={cn(
+                  "text-xs font-medium px-3 py-2 rounded-lg transition-colors border",
+                  form.status === s.value
+                    ? "bg-brand-500 text-white border-brand-500"
+                    : "bg-white border-ink-200 text-ink-700 hover:border-ink-300",
+                )}
+              >
+                {s.label}
+              </button>
+            ))}
+          </div>
+        </Field>
+
         <Field label="Комментарий">
-          <textarea value={form.comment} onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => set("comment", e.target.value)} placeholder="Например: QR отправлен, ждём подтверждение оплаты" rows={2} className="input resize-y" />
+          <textarea
+            value={form.comment} onChange={(e) => set("comment", e.target.value)}
+            placeholder="QR прислан в WeChat, ждём оплату…"
+            rows={2}
+            className={cn(inputCls, "resize-y")}
+          />
         </Field>
       </div>
 
-      {error && <div className="rounded-lg border border-danger/30 bg-danger-bg text-danger text-sm px-4 py-3">{error}</div>}
+      {/* Error */}
+      {error && (
+        <div className="bg-danger-bg border border-danger/30 text-danger text-sm px-4 py-3 rounded-xl">
+          {error}
+        </div>
+      )}
 
-      {/* Действия */}
+      {/* Actions */}
       <div className="flex gap-3 justify-between sticky bottom-4 lg:bottom-0">
         {isEdit ? (
-          <button onClick={handleDelete} disabled={saving} className="btn border border-danger/30 text-danger hover:bg-danger-bg px-4 py-2.5 disabled:opacity-50">
+          <button
+            onClick={handleDelete}
+            disabled={saving}
+            className="inline-flex items-center gap-2 bg-white border border-danger/30 hover:bg-danger-bg text-danger font-medium text-sm px-4 py-2.5 rounded-xl disabled:opacity-50 transition-colors"
+          >
             <Trash2 className="size-4" /> Удалить
           </button>
         ) : (
-          <Link href="/app/deals" className="btn-outline">Отмена</Link>
+          <Link
+            href="/app/deals"
+            className="inline-flex items-center gap-2 bg-white border border-ink-200 hover:border-ink-300 text-ink-700 font-medium text-sm px-4 py-2.5 rounded-xl transition-colors"
+          >
+            Отмена
+          </Link>
         )}
-        <button onClick={handleSave} disabled={saving} className="btn-primary">
-          <Save className="size-4" /> {saving ? "Сохраняю…" : isEdit ? "Сохранить" : "Создать сделку"}
+        <button
+          onClick={handleSave}
+          disabled={saving}
+          className="inline-flex items-center gap-2 bg-brand-500 hover:bg-brand-600 text-white font-display font-semibold text-sm px-5 py-2.5 rounded-xl shadow-sm disabled:opacity-50 transition-colors"
+        >
+          <Save className="size-4" />
+          {saving ? "Сохраняю…" : isEdit ? "Сохранить" : "Создать сделку"}
         </button>
       </div>
     </div>
   );
 }
 
-function Field({ label, hint, required, children }: { label: string; hint?: string; required?: boolean; children: React.ReactNode }) {
+const inputCls =
+  "w-full bg-white border border-ink-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-brand-500 focus:ring-4 focus:ring-brand-100 transition-all tabular-nums";
+
+function Field({
+  label, hint, required, children,
+}: {
+  label: string; hint?: string; required?: boolean; children: React.ReactNode;
+}) {
   return (
     <div>
       <label className="flex items-center justify-between mb-1.5">
-        <span className="muted-label">{label} {required && <span className="text-danger">*</span>}</span>
+        <span className="text-xs uppercase tracking-wider text-ink-500 font-medium">
+          {label} {required && <span className="text-danger">*</span>}
+        </span>
         {hint && <span className="text-xs text-ink-500 normal-case">{hint}</span>}
       </label>
       {children}
@@ -206,23 +432,49 @@ function Field({ label, hint, required, children }: { label: string; hint?: stri
   );
 }
 
-function Combobox({ value, onChange, options, listId, placeholder }: {
-  value: string; onChange: (v: string) => void; options: string[]; listId: string; placeholder: string;
+function ComboboxInput({
+  value, onChange, options, listId, placeholder,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  options: string[];
+  listId: string;
+  placeholder: string;
 }) {
   return (
     <>
-      <input type="text" value={value} onChange={(e: React.ChangeEvent<HTMLInputElement>) => onChange(e.target.value)} placeholder={placeholder} list={listId} className="input" />
-      <datalist id={listId}>{options.map((o) => <option key={o} value={o} />)}</datalist>
+      <input
+        type="text"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        list={listId}
+        className={inputCls}
+      />
+      <datalist id={listId}>
+        {options.map((o) => <option key={o} value={o} />)}
+      </datalist>
     </>
   );
 }
 
-function Kpi({ label, value, sub, big, color }: { label: string; value: string; sub?: string; big?: boolean; color?: string }) {
+function KpiItem({
+  label, value, subvalue, accent,
+}: {
+  label: string; value: string; subvalue?: string; accent?: boolean;
+}) {
   return (
     <div>
-      <p className="muted-label">{label}</p>
-      <p className={cn("font-display tabular-nums mt-0.5", big ? "font-bold text-2xl" : "font-semibold text-lg", color ?? "text-ink-900")}>{value}</p>
-      {sub && <p className="text-xs text-ink-500 tabular-nums">{sub}</p>}
+      <p className="text-xs uppercase tracking-wider opacity-80 font-medium">{label}</p>
+      <p className={cn(
+        "font-display tabular-nums mt-0.5",
+        accent ? "font-bold text-2xl" : "font-semibold text-lg",
+      )}>
+        {value}
+      </p>
+      {subvalue && (
+        <p className="text-xs opacity-75 tabular-nums">{subvalue}</p>
+      )}
     </div>
   );
 }

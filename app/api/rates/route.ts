@@ -37,6 +37,10 @@ export async function POST(req: Request) {
       cbr_rate: body.cbr_rate ?? null,
       atb_app_rate: body.atb_app_rate ?? null,
       atb_actual_rate: body.atb_actual_rate ?? null,
+      moex_cny_tod: body.moex_cny_tod ?? null,
+      moex_cny_tom: body.moex_cny_tom ?? null,
+      moex_cny_tms: body.moex_cny_tms ?? null,
+      moex_fetched_at: body.moex_fetched_at ?? null,
       source: body.source ?? "manual",
     })
     .select()

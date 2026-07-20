@@ -30,5 +30,6 @@ export type CashflowRow = {
   amount_rub: number;
   method: string | null;
   comment: string | null;
+  channel: "atb" | "rshb" | null;
   created_at: string;
 };

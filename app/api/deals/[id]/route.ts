@@ -35,6 +35,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   for (const key of [
     "date", "student_name", "university", "city", "purpose",
     "amount_cny", "atb_rate", "cbr_rate", "my_rate", "status", "comment",
+    "channel", "moex_ticker",
   ]) {
     if (key in body) updates[key] = body[key];
   }

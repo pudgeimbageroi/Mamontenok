@@ -50,6 +50,8 @@ export async function POST(req: Request) {
       my_rate: body.my_rate,
       status: body.status ?? "pending",
       comment: body.comment ?? null,
+      channel: body.channel ?? "atb",
+      moex_ticker: body.moex_ticker ?? null,
       created_by: session.profileId,
       updated_by: session.profileId,
     })

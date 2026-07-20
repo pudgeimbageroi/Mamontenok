@@ -51,6 +51,10 @@ export async function PATCH(req: Request) {
   if (typeof body.percent_value === "number") updates.percent_value = body.percent_value;
   if (typeof body.fixed_rub_value === "number") updates.fixed_rub_value = body.fixed_rub_value;
   if (typeof body.custom_rate_value === "number") updates.custom_rate_value = body.custom_rate_value;
+  // РСХБ настройки
+  if (typeof body.rshb_broker_pct === "number") updates.rshb_broker_pct = body.rshb_broker_pct;
+  if (typeof body.rshb_spread_pct === "number") updates.rshb_spread_pct = body.rshb_spread_pct;
+  if (body.rshb_default_ticker) updates.rshb_default_ticker = body.rshb_default_ticker;
 
   const { data, error } = await supabase
     .from("markup_settings")
