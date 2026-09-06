@@ -76,24 +76,50 @@ export function CalcClient({
     });
   }, [debouncedSaveRates]);
 
+  /**
+   * Тянем два источника подряд.
+   * ЦБ (cbr-xml-daily) работает откуда угодно, АТБ может быть забанен по IP —
+   * поэтому ЦБ идёт первым: даже если банк не дастся, что-то обновится.
+   */
   const refreshFromApi = async () => {
     setRefreshing(true);
     setRefreshError(null);
+
+    let gotSomething = false;
+    let atbFailed = "";
+
+    // 1. ЦБ
+    try {
+      const res = await fetch("/api/rates/cbr", { method: "POST" });
+      const data = await res.json();
+      if (res.ok) {
+        setRates((prev) => ({ ...prev, ...data }));
+        gotSomething = true;
+      }
+    } catch { /* молча — итог покажем ниже */ }
+
+    // 2. АТБ
     try {
       const res = await fetch("/api/rates/atb", { method: "POST" });
       const data = await res.json();
       if (res.ok) {
         setRates((prev) => ({ ...prev, ...data }));
-        setRefreshedAt(Date.now());
-        setTimeout(() => setRefreshedAt(null), 3000);
+        gotSomething = true;
       } else {
-        setRefreshError(data.error ?? "Не удалось обновить курс");
+        atbFailed = data.error ?? "АТБ не ответил";
       }
     } catch (err) {
-      setRefreshError(err instanceof Error ? err.message : "Сеть недоступна");
-    } finally {
-      setRefreshing(false);
+      atbFailed = err instanceof Error ? err.message : "АТБ недоступен";
     }
+
+    if (gotSomething) {
+      setRefreshedAt(Date.now());
+      setTimeout(() => setRefreshedAt(null), 3000);
+    }
+    if (atbFailed) setRefreshError(atbFailed);
+    if (!gotSomething && !atbFailed) setRefreshError("Не удалось обновить курсы");
+
+    setRefreshing(false);
   };
 
   const saveMarkupToServer = useCallback(async (patch: Partial<MarkupSettings>) => {
@@ -150,7 +176,8 @@ export function CalcClient({
           <div className="text-sm min-w-0">
             <p className="font-medium text-warning">{refreshError}</p>
             <p className="text-ink-600 mt-1">
-              Курсы можно вписать руками — поля ниже редактируются, расчёт не встанет.
+              Курс ЦБ обновился, АТБ — нет. Посмотри в приложении банка и впиши в поле
+              «АТБ (из приложения)» ниже, либо отправь боту <code className="bg-ink-100 px-1 rounded">/atb 13.06</code>
             </p>
           </div>
           <button

@@ -81,30 +81,54 @@ export async function POST(req: NextRequest) {
   const message = update.message;
   if (!message?.text) return NextResponse.json({ ok: true });
 
-  // Только приватный чат
-  if (message.chat.type !== "private") return NextResponse.json({ ok: true });
   // Не отвечаем ботам
   if (message.from.is_bot) return NextResponse.json({ ok: true });
 
   const text = message.text.trim();
   const fromId = message.from.id;
+  const chatId = message.chat.id;
+  const isGroup = message.chat.type !== "private";
   const firstName = message.from.first_name;
   const displayName = [firstName, message.from.last_name].filter(Boolean).join(" ");
 
-  // Whitelist — silent reject
+  // Whitelist — silent reject. Работает и в группе: чужой в общем чате
+  // не должен управлять сервисом.
   if (!isAllowedTelegramId(fromId)) {
     console.warn(
-      `[BOT-SECURITY] Blocked id=${fromId} @${message.from.username ?? "no-user"} text="${text.substring(0, 60)}"`,
+      `[BOT-SECURITY] Blocked id=${fromId} @${message.from.username ?? "no-user"} chat=${chatId} text="${text.substring(0, 60)}"`,
     );
+    return NextResponse.json({ ok: true });
+  }
+
+  // В группе бот отвечает только на /chatid — остальное там было бы шумом.
+  // Уведомления о сделках приходят в группу сами, команды даём в личке.
+  if (isGroup) {
+    // В группах Telegram дописывает @имя_бота к командам
+    const cmd = text.split("@")[0].trim();
+    if (cmd === "/chatid" || cmd === "/id") {
+      await sendBotMessage(
+        chatId,
+        `🆔 <b>ID этого чата</b>\n\n` +
+          `<code>${chatId}</code>\n\n` +
+          `Вставь его в Vercel → Settings → Environment Variables:\n` +
+          `<code>TELEGRAM_GROUP_CHAT_ID=${chatId}</code>\n\n` +
+          `<i>После этого сделай Redeploy — и сюда начнут падать уведомления о сделках.</i>`,
+      );
+    }
     return NextResponse.json({ ok: true });
   }
 
   // Роутинг команд
   try {
     if (text === "/start" || text === "/help") return await handleHelp(fromId);
+    if (text === "/chatid" || text === "/id") return await handleChatId(fromId, chatId);
     if (text === "/login" || text === "/l") return await handleLogin(fromId, displayName);
     if (text === "/rate" || text === "/r") return await handleRate(fromId);
     if (text === "/update" || text === "/u") return await handleUpdate(fromId);
+    if (text.startsWith("/atb ")) return await handleSetRate(fromId, text, "atb_app_rate", "АТБ (физлицо)");
+    if (text.startsWith("/ip ")) return await handleSetRate(fromId, text, "atb_ip_rate", "АТБ на ИП");
+    if (text.startsWith("/sha ")) return await handleSetRate(fromId, text, "shage_rate", "沙哥");
+    if (text.startsWith("/my ")) return await handleSetMyRate(fromId, text);
     if (text === "/cash" || text === "/c") return await handleCash(fromId);
     if (text === "/deals" || text === "/d") return await handleDeals(fromId);
     if (text.startsWith("/deal ")) return await handleNewDeal(fromId, text);
@@ -130,7 +154,11 @@ async function handleHelp(fromId: number) {
     `🦣 <b>Мамонтёнок — на связи</b>\n\n` +
       `<b>Курс</b>\n` +
       `/rate — курс прямо сейчас\n` +
-      `/update — подтянуть свежий из АТБ\n\n` +
+      `/update — подтянуть ЦБ и АТБ\n` +
+      `/atb 13.06 — вписать курс АТБ вручную\n` +
+      `/ip 13.0 — курс АТБ на ИП\n` +
+      `/sha 13.3 — курс 沙哥\n` +
+      `/my 13.5 — мой курс для студента\n\n` +
       `<b>Сделки</b>  <i>(все создаются как «Завершено»)</i>\n` +
       `/deal Иван 5000 — новая сделка\n` +
       `/deals — последние 10\n` +
@@ -138,9 +166,122 @@ async function handleHelp(fromId: number) {
       `/edit <i>id</i> amount=5200 rate=12.9\n\n` +
       `<b>Деньги</b>\n` +
       `/cash — касса и доли\n\n` +
-      `<b>Вход в браузере</b>\n` +
-      `/login — ссылка для входа с браузера`,
+      `<b>Прочее</b>\n` +
+      `/login — вход в браузере\n` +
+      `/chatid — ID чата (для настройки группы)`,
   );
+  return NextResponse.json({ ok: true });
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// /chatid — узнать ID чата (в личке и в группе)
+// ═══════════════════════════════════════════════════════════════════
+async function handleChatId(fromId: number, chatId: number) {
+  await sendBotMessage(
+    fromId,
+    `🆔 <b>ID этого чата</b>\n\n<code>${chatId}</code>\n\n` +
+      `<i>Чтобы настроить уведомления в общую группу — добавь меня туда и напиши там /chatid.</i>`,
+  );
+  return NextResponse.json({ ok: true });
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// /atb 13.06 · /ip 13.0 · /sha 13.3 — ручной ввод курсов
+// АТБ блокирует IP Vercel, поэтому вписать курс с телефона —
+// самый быстрый рабочий путь.
+// ═══════════════════════════════════════════════════════════════════
+async function handleSetRate(
+  fromId: number,
+  text: string,
+  column: "atb_app_rate" | "atb_ip_rate" | "shage_rate",
+  label: string,
+) {
+  const raw = text.split(/\s+/)[1]?.replace(",", ".");
+  const value = parseFloat(raw ?? "");
+
+  if (!isFinite(value) || value <= 0) {
+    await sendBotMessage(fromId, `❌ Не понял число. Пример: <code>${text.split(" ")[0]} 13.06</code>`);
+    return NextResponse.json({ ok: true });
+  }
+  if (value > 100) {
+    await sendBotMessage(fromId, `❌ ${value} — это точно курс юаня? Проверь запятую.`);
+    return NextResponse.json({ ok: true });
+  }
+
+  const supabase = await createSupabaseAdmin();
+  const { data: prev } = await supabase
+    .from("rates")
+    .select("cbr_rate, atb_app_rate, atb_actual_rate, atb_ip_rate, shage_rate")
+    .order("fetched_at", { ascending: false })
+    .limit(1)
+    .single();
+
+  const { data: newRates, error } = await supabase
+    .from("rates")
+    .insert({
+      cbr_rate: prev?.cbr_rate ?? null,
+      atb_app_rate: prev?.atb_app_rate ?? null,
+      atb_actual_rate: prev?.atb_actual_rate ?? null,
+      atb_ip_rate: prev?.atb_ip_rate ?? null,
+      shage_rate: prev?.shage_rate ?? null,
+      [column]: value,
+      source: "manual",
+    })
+    .select()
+    .single();
+
+  if (error || !newRates) {
+    await sendBotMessage(fromId, `❌ Ошибка БД: ${error?.message ?? "не сохранилось"}`);
+    return NextResponse.json({ ok: true });
+  }
+
+  const { data: markup } = await supabase.from("markup_settings").select("*").limit(1).single();
+  if (!markup) {
+    await sendBotMessage(fromId, `✅ Курс ${label} = <b>${value}</b> сохранён.`);
+    return NextResponse.json({ ok: true });
+  }
+
+  await sendBotMessage(fromId, `✅ Курс ${label} = <b>${value}</b> сохранён.`);
+  await sendRatesCard(fromId, newRates as RateRow, markup as MarkupSettings, new Date(), false);
+  return NextResponse.json({ ok: true });
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// /my 13.5 — мой курс для студента
+// ═══════════════════════════════════════════════════════════════════
+async function handleSetMyRate(fromId: number, text: string) {
+  const raw = text.split(/\s+/)[1]?.replace(",", ".");
+  const value = parseFloat(raw ?? "");
+
+  if (!isFinite(value) || value <= 0 || value > 100) {
+    await sendBotMessage(fromId, `❌ Не понял число. Пример: <code>/my 13.5</code>`);
+    return NextResponse.json({ ok: true });
+  }
+
+  const supabase = await createSupabaseAdmin();
+  const { data: existing } = await supabase
+    .from("markup_settings")
+    .select("id")
+    .order("updated_at", { ascending: false })
+    .limit(1)
+    .single();
+
+  if (!existing) {
+    await sendBotMessage(fromId, `❌ Настройки не найдены.`);
+    return NextResponse.json({ ok: true });
+  }
+
+  const { error } = await supabase
+    .from("markup_settings")
+    .update({ custom_rate_value: value, mode: "custom_rate", updated_at: new Date().toISOString() })
+    .eq("id", existing.id);
+
+  if (error) {
+    await sendBotMessage(fromId, `❌ Ошибка БД: ${error.message}`);
+    return NextResponse.json({ ok: true });
+  }
+
+  await sendBotMessage(fromId, `✅ Мой курс для студента = <b>${value}</b> ₽/¥`);
   return NextResponse.json({ ok: true });
 }
 
@@ -217,51 +358,73 @@ async function handleRate(fromId: number) {
 // /update
 // ═══════════════════════════════════════════════════════════════════
 async function handleUpdate(fromId: number) {
-  await sendBotMessage(fromId, `⌛ Тяну свежий курс из АТБ…`);
+  await sendBotMessage(fromId, `⌛ Тяну курсы…`);
 
-  let atbBuying: number | undefined;
-  let cbrRate: number | undefined;
+  // ─── 1. АТБ (может быть заблокирован по IP) ───
+  let atbBuying: number | null = null;
+  let atbError = "";
   try {
     const res = await fetch(ATB_API_URL, {
       headers: {
         Accept: "application/json",
-        "User-Agent": "Mozilla/5.0 (Mamontenok)",
+        "User-Agent":
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Accept-Language": "ru-RU,ru;q=0.9",
         Referer: "https://mobile.atb.su/",
+        Origin: "https://mobile.atb.su",
       },
       cache: "no-store",
-      signal: AbortSignal.timeout(10000),
+      signal: AbortSignal.timeout(9000),
     });
-    if (!res.ok) {
-      await sendBotMessage(fromId, `❌ АТБ вернул ${res.status}`);
-      return NextResponse.json({ ok: true });
-    }
-    const json = await res.json();
-    const cnyEntry = (json.data as Array<Record<string, unknown>>)?.find(
-      (c) => c.charCode === "CNY",
-    );
-    if (!cnyEntry) {
-      await sendBotMessage(fromId, `❌ CNY не найден в ответе АТБ.`);
-      return NextResponse.json({ ok: true });
-    }
-    const atbRateObj = cnyEntry.atbRate as { buyingRate?: number } | undefined;
-    const cbrRateObj = cnyEntry.cbrRate as { rate?: number } | undefined;
-    atbBuying = atbRateObj?.buyingRate;
-    cbrRate = cbrRateObj?.rate;
-    if (!atbBuying || atbBuying <= 0) {
-      await sendBotMessage(fromId, `❌ У CNY нет buyingRate.`);
-      return NextResponse.json({ ok: true });
+    if (res.ok) {
+      const json = await res.json();
+      const cnyEntry = (json.data as Array<Record<string, unknown>>)?.find(
+        (c) => c.charCode === "CNY",
+      );
+      const atbRateObj = cnyEntry?.atbRate as { buyingRate?: number } | undefined;
+      atbBuying = atbRateObj?.buyingRate ?? null;
+      if (!atbBuying || atbBuying <= 0) atbError = "в ответе нет курса CNY";
+    } else {
+      atbError = `вернул ${res.status}`;
     }
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    await sendBotMessage(fromId, `❌ АТБ недоступен: ${msg}`);
+    atbError = err instanceof Error ? err.message : String(err);
+  }
+
+  // ─── 2. ЦБ — независимый источник, работает даже когда АТБ забанил IP ───
+  let cbrRate: number | null = null;
+  try {
+    const res = await fetch("https://www.cbr-xml-daily.ru/daily_json.js", {
+      headers: { Accept: "application/json", "User-Agent": "Mozilla/5.0 (Mamontenok)" },
+      cache: "no-store",
+      signal: AbortSignal.timeout(8000),
+    });
+    if (res.ok) {
+      const json = await res.json();
+      const cny = json?.Valute?.CNY;
+      if (cny?.Value && cny?.Nominal) {
+        const r = Number(cny.Value) / Number(cny.Nominal);
+        if (isFinite(r) && r > 0) cbrRate = Number(r.toFixed(4));
+      }
+    }
+  } catch {
+    // молча — ниже сообщим что оба источника легли
+  }
+
+  if (!atbBuying && !cbrRate) {
+    await sendBotMessage(
+      fromId,
+      `❌ Ни один источник не ответил.\n\n` +
+        `Впиши курс руками: <code>/atb 13.06</code>`,
+    );
     return NextResponse.json({ ok: true });
   }
 
+  // ─── 3. Сохраняем, не теряя ручные курсы ───
   const supabase = await createSupabaseAdmin();
   const { data: prev } = await supabase
     .from("rates")
-    .select("atb_actual_rate")
+    .select("cbr_rate, atb_app_rate, atb_actual_rate, atb_ip_rate, shage_rate")
     .order("fetched_at", { ascending: false })
     .limit(1)
     .single();
@@ -269,10 +432,12 @@ async function handleUpdate(fromId: number) {
   const { data: newRates, error } = await supabase
     .from("rates")
     .insert({
-      cbr_rate: cbrRate ?? null,
-      atb_app_rate: atbBuying,
+      cbr_rate: cbrRate ?? prev?.cbr_rate ?? null,
+      atb_app_rate: atbBuying ?? prev?.atb_app_rate ?? null,
       atb_actual_rate: prev?.atb_actual_rate ?? null,
-      source: "atb_api",
+      atb_ip_rate: prev?.atb_ip_rate ?? null,
+      shage_rate: prev?.shage_rate ?? null,
+      source: atbBuying ? "atb_api" : "cbr_api",
     })
     .select()
     .single();
@@ -281,6 +446,16 @@ async function handleUpdate(fromId: number) {
   if (error || !newRates || !markup) {
     await sendBotMessage(fromId, `❌ Ошибка БД при сохранении.`);
     return NextResponse.json({ ok: true });
+  }
+
+  // Если АТБ не дался — честно говорим и подсказываем команду
+  if (!atbBuying) {
+    await sendBotMessage(
+      fromId,
+      `⚠️ ЦБ обновил, а АТБ не дался: ${atbError}\n\n` +
+        `Похоже, банк блокирует наш сервер. Посмотри курс в приложении и впиши:\n` +
+        `<code>/atb 13.06</code>`,
+    );
   }
 
   await sendRatesCard(fromId, newRates as RateRow, markup as MarkupSettings, new Date(), true);

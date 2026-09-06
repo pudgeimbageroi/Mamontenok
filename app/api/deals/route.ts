@@ -6,7 +6,8 @@
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/auth";
 import { createSupabaseAdmin } from "@/lib/supabase/server";
-import { notifyOtherPartners } from "@/lib/notifications";
+import { notifyOtherPartners, fmtRub, fmtCny, esc } from "@/lib/notifications";
+import { channelInfo } from "@/lib/channels";
 
 export async function GET(req: Request) {
   const session = await getSession();
@@ -59,20 +60,21 @@ export async function POST(req: Request) {
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
-  // 🔔 Уведомление партнёру
+  // 🔔 Уведомление партнёру + в общую группу
   const profit = Number(data.profit_rub ?? 0);
+  const share = profit / 2;
   notifyOtherPartners(
     session.telegramId,
     `⚡ <b>Новая сделка</b>\n\n` +
-      `👤 ${data.student_name}\n` +
-      `💴 ${data.amount_cny} ¥\n` +
-      `📈 Прибыль: <b>${fmtRub(profit)}</b>\n\n` +
-      `<i>Внёс: ${session.displayName}</i>`,
+      `👤 ${esc(data.student_name)}\n` +
+      (data.university ? `🎓 ${esc(data.university)}\n` : "") +
+      (data.purpose ? `📋 ${esc(data.purpose)}\n` : "") +
+      `💴 ${fmtCny(Number(data.amount_cny))} · ${channelInfo(data.channel).shortLabel}\n` +
+      `💰 Студент платит: ${fmtRub(Number(data.student_pays_rub ?? 0))}\n` +
+      `📈 Прибыль: <b>${fmtRub(profit)}</b>\n` +
+      `🪨 На одного: ${fmtRub(share)}\n\n` +
+      `<i>Внёс: ${esc(session.displayName)}</i>`,
   ).catch(() => {});
 
   return NextResponse.json(data);
-}
-
-function fmtRub(n: number): string {
-  return new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 0 }).format(n) + " ₽";
 }

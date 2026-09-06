@@ -6,8 +6,9 @@
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/auth";
 import { createSupabaseAdmin } from "@/lib/supabase/server";
-import { notifyOtherPartners } from "@/lib/notifications";
+import { notifyOtherPartners, fmtRub, esc } from "@/lib/notifications";
 import { cashCategoryInfo } from "@/lib/cash-categories";
+import { channelInfo } from "@/lib/channels";
 
 export async function GET() {
   const session = await getSession();
@@ -48,20 +49,18 @@ export async function POST(req: Request) {
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
-  // 🔔 Push партнёру
+  // 🔔 Push партнёру + в общую группу
   const cat = cashCategoryInfo(data.category);
   notifyOtherPartners(
     session.telegramId,
-    `💸 <b>Новое движение в кассе</b>\n\n` +
+    `💸 <b>Движение в кассе</b>\n\n` +
       `${cat.emoji} ${cat.label}\n` +
       `Сумма: <b>${fmtRub(Number(data.amount_rub))}</b>\n` +
-      (data.comment ? `📝 ${data.comment}\n` : "") +
-      `\n<i>Внёс: ${session.displayName}</i>`,
+      (data.channel ? `🏦 Счёт: ${channelInfo(data.channel).shortLabel}\n` : "") +
+      (data.method ? `💳 ${esc(data.method)}\n` : "") +
+      (data.comment ? `📝 ${esc(data.comment)}\n` : "") +
+      `\n<i>Внёс: ${esc(session.displayName)}</i>`,
   ).catch(() => {});
 
   return NextResponse.json(data);
-}
-
-function fmtRub(n: number): string {
-  return new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 0 }).format(n) + " ₽";
 }
