@@ -116,7 +116,7 @@ export async function POST() {
   const supabase = await createSupabaseAdmin();
   const { data: prev } = await supabase
     .from("rates")
-    .select("cbr_rate, atb_app_rate, atb_actual_rate")
+    .select("cbr_rate, atb_app_rate, atb_actual_rate, shage_rate")
     .order("fetched_at", { ascending: false })
     .limit(1)
     .single();
@@ -127,6 +127,7 @@ export async function POST() {
       cbr_rate: prev?.cbr_rate ?? null,
       atb_app_rate: prev?.atb_app_rate ?? null,
       atb_actual_rate: prev?.atb_actual_rate ?? null,
+      shage_rate: prev?.shage_rate ?? null,
       moex_cny_tod: tod,
       moex_cny_tom: tom,
       moex_cny_tms: tms,

@@ -4,13 +4,14 @@ import { useState, useCallback, useMemo } from "react";
 import {
   RefreshCw, AlertTriangle, TrendingUp, TrendingDown,
   Sparkles, Coins, Banknote, ArrowLeftRight, Check,
-  Building2, LineChart,
+  Building2, LineChart, UserRound,
 } from "lucide-react";
 import { cn, formatRub, formatCny, formatRate } from "@/lib/utils";
 import {
   computeMyRate,
   effectiveAtbRate,
   effectiveRshbRate,
+  effectiveShageRate,
   baseRateByChannel,
   profitPerYuan,
   calcDealFromCny,
@@ -21,6 +22,7 @@ import {
 import { useDebouncedCallback } from "@/lib/use-debounced";
 import type { RateRow, MarkupSettings, Channel, MoexTicker } from "@/lib/types";
 import { RSHB_DEFAULT_TICKER } from "@/lib/types";
+import { channelInfo } from "@/lib/channels";
 
 const MIN_PROFIT_WARNING = 5000;
 
@@ -53,6 +55,7 @@ export function CalcClient({
   const myRate = computeMyRate(rates, markup);
   const atbRate = effectiveAtbRate(rates);
   const rshbRate = effectiveRshbRate(rates, markup, moexTicker);
+  const shageRate = effectiveShageRate(rates);
   const baseRate = baseRateByChannel(rates, markup, channel, moexTicker);
   const pPerYuan = profitPerYuan(rates, markup, channel, moexTicker);
   const dealCny = calcDealFromCny(amountCny, rates, markup, channel, moexTicker);
@@ -77,6 +80,7 @@ export function CalcClient({
           moex_cny_tod: next.moex_cny_tod,
           moex_cny_tom: next.moex_cny_tom,
           moex_cny_tms: next.moex_cny_tms,
+          shage_rate: next.shage_rate,
           source: "manual",
         }),
       });
@@ -199,7 +203,7 @@ export function CalcClient({
         <h2 className="text-lg font-display font-semibold text-ink-900 mb-3 flex items-center gap-2">
           <ArrowLeftRight className="size-5 text-brand-500" /> Канал закупки юаней
         </h2>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           <ChannelCard
             active={channel === "atb"}
             onClick={() => setChannel("atb")}
@@ -214,15 +218,50 @@ export function CalcClient({
             onClick={() => setChannel("rshb")}
             icon={<LineChart className="size-5" />}
             title="Биржа РСХБ"
-            sublabel={`MOEX ${moexTicker} · тариф Инвестор`}
+            sublabel={`MOEX ${moexTicker} · Инвестор`}
             value={rshbRate}
             valueHint={
               rshbRate > 0
-                ? `= ${formatRate(moexRawByTicker[moexTicker])} × (1 + ${(markup.rshb_broker_pct * 100).toFixed(3)}% + ${(markup.rshb_spread_pct * 100).toFixed(3)}%)`
+                ? `= ${formatRate(moexRawByTicker[moexTicker])} × ${(1 + markup.rshb_broker_pct + markup.rshb_spread_pct).toFixed(5)}`
                 : "нет данных MOEX — обнови курс"
             }
           />
+          <ChannelCard
+            active={channel === "shage"}
+            onClick={() => setChannel("shage")}
+            icon={<UserRound className="size-5" />}
+            title="沙哥"
+            sublabel="посредник · курс вручную"
+            value={shageRate}
+            valueHint={shageRate > 0 ? "его курс = наша себестоимость" : "впиши курс ниже ↓"}
+          />
         </div>
+
+        {/* Ввод курса 沙哥 — только если выбран этот канал */}
+        {channel === "shage" && (
+          <div className="mt-3 bg-white border-2 border-rose-200 rounded-2xl p-5">
+            <div className="flex items-center gap-2 mb-3">
+              <UserRound className="size-4 text-rose-600" />
+              <p className="text-xs uppercase tracking-wider text-ink-500 font-medium">
+                Курс от 沙哥
+              </p>
+            </div>
+            <div className="flex items-baseline gap-1.5">
+              <input
+                type="number"
+                step="0.0001"
+                value={rates.shage_rate || ""}
+                onChange={(e) => updateRates({ shage_rate: parseFloat(e.target.value) || 0 })}
+                className="font-display font-bold text-4xl text-rose-700 tabular-nums bg-transparent border-0 focus:outline-none focus:ring-0 p-0 max-w-full min-w-0 flex-1"
+                placeholder="13.3000"
+              />
+              <span className="font-display font-bold text-xl text-ink-300">₽/¥</span>
+            </div>
+            <p className="text-xs text-ink-500 mt-2">
+              Впиши курс который он назвал — без комиссий, это уже финальная себестоимость
+            </p>
+          </div>
+        )}
 
         {/* Пикер тикера — только если выбрана Биржа */}
         {channel === "rshb" && (
@@ -339,7 +378,8 @@ export function CalcClient({
         <div className="relative flex flex-col lg:flex-row items-start lg:items-center justify-between gap-6">
           <div>
             <p className="text-xs font-medium uppercase tracking-widest text-brand-100 mb-2">
-              Мой курс для студента · {channel === "atb" ? "через АТБ" : `через Биржу (${moexTicker})`}
+              Мой курс для студента · через {channelInfo(channel).shortLabel}
+              {channel === "rshb" && ` (${moexTicker.replace("CNYRUB_", "")})`}
             </p>
             <div className="flex items-baseline gap-3">
               <span className="font-display font-bold text-6xl lg:text-7xl text-white tabular-nums tracking-tight">
@@ -364,7 +404,7 @@ export function CalcClient({
             </div>
             {pPerYuan < 0 && (
               <p className="text-xs text-red-200 font-medium mt-1">
-                ⚠ Мой курс ниже {channel === "atb" ? "АТБ" : "биржи"} — убыток
+                ⚠ Мой курс ниже {channelInfo(channel).shortLabel} — убыток
               </p>
             )}
             <p className="text-[10px] text-brand-100 mt-1 tabular-nums opacity-80">
@@ -390,10 +430,10 @@ export function CalcClient({
             inputValue={amountCny}
             inputSuffix="¥"
             onInputChange={setAmountCny}
-            channelLabel={channel === "atb" ? "АТБ" : "Биржа"}
+            channelLabel={channelInfo(channel).shortLabel}
             rows={[
               { label: "Студент платит", value: formatRub(dealCny.studentPaysRub), highlight: true },
-              { label: `Уйдёт с ${channel === "atb" ? "АТБ" : "РСХБ"}`, value: formatRub(dealCny.atbOutflowRub) },
+              { label: `Уйдёт с ${channelInfo(channel).shortLabel}`, value: formatRub(dealCny.atbOutflowRub) },
               {
                 label: "Прибыль",
                 value: formatRub(dealCny.profitRub),
@@ -419,10 +459,10 @@ export function CalcClient({
             inputValue={budgetRub}
             inputSuffix="₽"
             onInputChange={setBudgetRub}
-            channelLabel={channel === "atb" ? "АТБ" : "Биржа"}
+            channelLabel={channelInfo(channel).shortLabel}
             rows={[
               { label: "Получит юаней", value: formatCny(dealRub.amountCny), highlight: true },
-              { label: `Уйдёт с ${channel === "atb" ? "АТБ" : "РСХБ"}`, value: formatRub(dealRub.atbOutflowRub) },
+              { label: `Уйдёт с ${channelInfo(channel).shortLabel}`, value: formatRub(dealRub.atbOutflowRub) },
               {
                 label: "Прибыль",
                 value: formatRub(dealRub.profitRub),

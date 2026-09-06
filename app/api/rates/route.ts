@@ -41,6 +41,7 @@ export async function POST(req: Request) {
       moex_cny_tom: body.moex_cny_tom ?? null,
       moex_cny_tms: body.moex_cny_tms ?? null,
       moex_fetched_at: body.moex_fetched_at ?? null,
+      shage_rate: body.shage_rate ?? null,
       source: body.source ?? "manual",
     })
     .select()

@@ -45,3 +45,18 @@ export function formatDate(d: Date | string | null): string {
   const date = typeof d === "string" ? new Date(d) : d;
   return new Intl.DateTimeFormat("ru-RU").format(date);
 }
+
+/**
+ * Русское склонение по числу.
+ * plural(1, "сделка", "сделки", "сделок") → "сделка"
+ * plural(3, …) → "сделки"
+ * plural(7, …) → "сделок"
+ */
+export function plural(n: number, one: string, few: string, many: string): string {
+  const abs = Math.abs(n) % 100;
+  const last = abs % 10;
+  if (abs > 10 && abs < 20) return many;
+  if (last > 1 && last < 5) return few;
+  if (last === 1) return one;
+  return many;
+}

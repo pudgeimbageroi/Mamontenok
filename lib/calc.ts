@@ -73,6 +73,22 @@ export function effectiveRshbRate(
   );
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// 沙哥 (посредник)
+// ═══════════════════════════════════════════════════════════════════
+
+/**
+ * Себестоимость через 沙哥 — это просто его курс, который он назвал.
+ * Никаких комиссий и наценок: что сказал, то и платим.
+ */
+export function effectiveShageRate(rates: RateRow): number {
+  return rates.shage_rate ?? 0;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// УНИВЕРСАЛЬНЫЙ ВЫБОР КАНАЛА
+// ═══════════════════════════════════════════════════════════════════
+
 /** Универсальный "мой закупочный курс" в зависимости от канала */
 export function baseRateByChannel(
   rates: RateRow,
@@ -80,10 +96,15 @@ export function baseRateByChannel(
   channel: Channel,
   moexTicker?: MoexTicker,
 ): number {
-  if (channel === "rshb") {
-    return effectiveRshbRate(rates, markup, moexTicker);
+  switch (channel) {
+    case "rshb":
+      return effectiveRshbRate(rates, markup, moexTicker);
+    case "shage":
+      return effectiveShageRate(rates);
+    case "atb":
+    default:
+      return effectiveAtbRate(rates);
   }
-  return effectiveAtbRate(rates);
 }
 
 // ═══════════════════════════════════════════════════════════════════

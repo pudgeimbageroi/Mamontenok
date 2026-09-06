@@ -5,7 +5,7 @@
 import type { DealStatus } from "./deal-statuses";
 
 /** Канал закупки юаней */
-export type Channel = "atb" | "rshb";
+export type Channel = "atb" | "rshb" | "shage";
 
 /** Тикеры MOEX для CNY */
 export type MoexTicker = "CNYRUB_TOD" | "CNYRUB_TOM" | "CNYRUB_TMS";
@@ -20,6 +20,8 @@ export type RateRow = {
   moex_cny_tom: number | null;
   moex_cny_tms: number | null;
   moex_fetched_at: string | null;
+  // 沙哥 — курс посредника, вводится вручную
+  shage_rate: number | null;
   source: "manual" | "cbr_api" | "atb_api" | "moex_api";
   fetched_at: string;
 };

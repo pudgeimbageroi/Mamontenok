@@ -3,10 +3,11 @@
 import { useState, useTransition, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { ArrowLeft, Trash2, Save, AlertTriangle, Building2, LineChart } from "lucide-react";
+import { ArrowLeft, Trash2, Save, AlertTriangle, Building2, LineChart, UserRound } from "lucide-react";
 import { cn, formatRub, formatCny } from "@/lib/utils";
 import { DEAL_STATUSES, type DealStatus } from "@/lib/deal-statuses";
 import type { Deal, ReferenceItem, Channel, MoexTicker } from "@/lib/types";
+import { channelInfo } from "@/lib/channels";
 
 const MIN_PROFIT_WARNING = 5000;
 
@@ -190,52 +191,31 @@ export function DealForm({
       {/* Канал закупки */}
       <div className="bg-white border border-ink-200 rounded-2xl p-5 space-y-4">
         <h2 className="font-display font-semibold text-ink-900">Канал закупки юаней</h2>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <button
-            type="button"
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <ChannelButton
+            active={form.channel === "atb"}
             onClick={() => set("channel", "atb")}
-            className={cn(
-              "flex items-center gap-3 border-2 rounded-xl px-4 py-3 text-left transition-all",
-              form.channel === "atb"
-                ? "border-brand-500 bg-brand-50 ring-4 ring-brand-100"
-                : "border-ink-200 hover:border-ink-300 bg-white",
-            )}
-          >
-            <div className={cn(
-              "size-9 rounded-lg flex items-center justify-center",
-              form.channel === "atb" ? "bg-brand-500 text-white" : "bg-ink-100 text-ink-500",
-            )}>
-              <Building2 className="size-5" />
-            </div>
-            <div>
-              <p className="text-sm font-display font-bold text-ink-900">АТБ Bank</p>
-              <p className="text-xs text-ink-500">через приложение</p>
-            </div>
-          </button>
-          <button
-            type="button"
+            icon={<Building2 className="size-5" />}
+            title="АТБ Bank"
+            sublabel="через приложение"
+          />
+          <ChannelButton
+            active={form.channel === "rshb"}
             onClick={() => {
               set("channel", "rshb");
               if (!form.moex_ticker) set("moex_ticker", "CNYRUB_TMS");
             }}
-            className={cn(
-              "flex items-center gap-3 border-2 rounded-xl px-4 py-3 text-left transition-all",
-              form.channel === "rshb"
-                ? "border-brand-500 bg-brand-50 ring-4 ring-brand-100"
-                : "border-ink-200 hover:border-ink-300 bg-white",
-            )}
-          >
-            <div className={cn(
-              "size-9 rounded-lg flex items-center justify-center",
-              form.channel === "rshb" ? "bg-brand-500 text-white" : "bg-ink-100 text-ink-500",
-            )}>
-              <LineChart className="size-5" />
-            </div>
-            <div>
-              <p className="text-sm font-display font-bold text-ink-900">Биржа РСХБ</p>
-              <p className="text-xs text-ink-500">тариф Инвестор</p>
-            </div>
-          </button>
+            icon={<LineChart className="size-5" />}
+            title="Биржа РСХБ"
+            sublabel="тариф Инвестор"
+          />
+          <ChannelButton
+            active={form.channel === "shage"}
+            onClick={() => set("channel", "shage")}
+            icon={<UserRound className="size-5" />}
+            title="沙哥"
+            sublabel="посредник"
+          />
         </div>
         {form.channel === "rshb" && (
           <div>
@@ -287,8 +267,8 @@ export function DealForm({
             />
           </Field>
           <Field
-            label={form.channel === "rshb" ? "Курс РСХБ" : "Курс АТБ"}
-            hint="по которому списали" required
+            label={`Курс ${channelInfo(form.channel).shortLabel}`}
+            hint={form.channel === "shage" ? "который он назвал" : "по которому списали"} required
           >
             <input
               type="number" step="0.0001" value={form.atb_rate || ""}
@@ -318,7 +298,7 @@ export function DealForm({
         <div className="grid grid-cols-2 gap-3">
           <KpiItem label="Студент платит" value={formatRub(calcs.studentPays)} />
           <KpiItem
-            label={form.channel === "rshb" ? "Уйдёт с РСХБ" : "Уйдёт с АТБ"}
+            label={`Уйдёт с ${channelInfo(form.channel).shortLabel}`}
             value={formatRub(calcs.atbOutflow)}
           />
           <KpiItem
@@ -413,6 +393,40 @@ export function DealForm({
 
 const inputCls =
   "w-full bg-white border border-ink-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-brand-500 focus:ring-4 focus:ring-brand-100 transition-all tabular-nums";
+
+function ChannelButton({
+  active, onClick, icon, title, sublabel,
+}: {
+  active: boolean;
+  onClick: () => void;
+  icon: React.ReactNode;
+  title: string;
+  sublabel: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "flex items-center gap-3 border-2 rounded-xl px-4 py-3 text-left transition-all",
+        active
+          ? "border-brand-500 bg-brand-50 ring-4 ring-brand-100"
+          : "border-ink-200 hover:border-ink-300 bg-white",
+      )}
+    >
+      <div className={cn(
+        "size-9 rounded-lg flex items-center justify-center shrink-0",
+        active ? "bg-brand-500 text-white" : "bg-ink-100 text-ink-500",
+      )}>
+        {icon}
+      </div>
+      <div className="min-w-0">
+        <p className="text-sm font-display font-bold text-ink-900 truncate">{title}</p>
+        <p className="text-xs text-ink-500 truncate">{sublabel}</p>
+      </div>
+    </button>
+  );
+}
 
 function Field({
   label, hint, required, children,

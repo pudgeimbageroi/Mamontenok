@@ -1,36 +1,35 @@
 /**
  * POST /api/rates/atb
  *
- * Тянет курс CNY и курс ЦБ через прокси-функцию в Yandex Cloud
- * (функция отдаёт ответ АТБ один-в-один + удобные поля).
- * Структура data[] такая же, как у АТБ:
+ * Тянет курс CNY и курс ЦБ из АТБ Bank API.
+ * Структура ответа (точная):
  *   {
  *     "data": [
  *       {
  *         "charCode": "CNY",
- *         "atbRate": { "sellingRate": 11.25, "buyingRate": 11.74 },
- *         "cbrRate": { "rate": 11.38 }
+ *         "atbRate": { "sellingRate": 10.37, "buyingRate": 11.0 },
+ *         "cbrRate": { "rate": 10.61 }
  *       },
  *       ...
  *     ]
  *   }
  *
- * Используем `buyingRate` (курс покупки ¥ в АТБ) и `cbrRate.rate` для базы.
+ * Используем `sellingRate` (что АТБ продаёт нам — это наш курс покупки CNY)
+ * и `cbrRate.rate` для базы.
  */
 
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/auth";
 import { createSupabaseAdmin } from "@/lib/supabase/server";
 
+// 🌍 Запускаем эту функцию во Франкфурте — ближе к РФ, АТБ его не блочит
+// (American IP Vercel'а блокировались, отсюда fetch failed)
 export const runtime = "nodejs";
+export const preferredRegion = ["fra1"];
 export const dynamic = "force-dynamic";
 export const maxDuration = 15;
 
-// Идём в АТБ НЕ напрямую, а через публичную функцию в Yandex Cloud (РФ-регион):
-// у Vercel зарубежный IP, и АТБ его блокирует (даже Франкфурт fra1 не помогал).
-// Функция ходит в АТБ из России и возвращает тот же ответ data[...] один-в-один.
-// Раньше здесь был прямой адрес: https://mobile.atb.su/atb-gateway/mobile/api/msfl/v1/rate
-const ATB_API_URL = "https://functions.yandexcloud.net/d4eidj1qrgbd5odp1n1k";
+const ATB_API_URL = "https://mobile.atb.su/atb-gateway/mobile/api/msfl/v1/rate";
 
 interface AtbCurrencyEntry {
   charCode?: string;
@@ -54,16 +53,23 @@ export async function POST() {
   let res: Response;
   try {
     res = await fetch(ATB_API_URL, {
-      headers: { Accept: "application/json" },
+      headers: {
+        Accept: "application/json",
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
+        Referer: "https://mobile.atb.su/",
+        Origin: "https://mobile.atb.su",
+      },
       cache: "no-store",
       signal: AbortSignal.timeout(10000), // 10 сек таймаут
     });
   } catch (err) {
+    // Сетевая ошибка — обычно геоблок или таймаут
     const msg = err instanceof Error ? err.message : String(err);
     console.error("[ATB API] Network error:", msg);
     return NextResponse.json(
       {
-        error: "Не удалось получить курс — попробуй ещё раз или впиши вручную.",
+        error: "АТБ API недоступен из нашего региона. Возможно блокировка IP — попробуй ещё раз или впиши курс вручную.",
         debug: { networkError: msg },
       },
       { status: 502 },
@@ -71,6 +77,7 @@ export async function POST() {
   }
 
   try {
+
     const rawText = await res.text();
     console.log("[ATB API] status:", res.status, "body length:", rawText.length);
     console.log("[ATB API] body preview:", rawText.substring(0, 500));
@@ -78,7 +85,7 @@ export async function POST() {
     if (!res.ok) {
       return NextResponse.json(
         {
-          error: `Прокси-функция вернула ${res.status}`,
+          error: `АТБ API вернул ${res.status}`,
           debug: { status: res.status, body: rawText.substring(0, 500) },
         },
         { status: 502 },
@@ -91,7 +98,7 @@ export async function POST() {
     } catch {
       return NextResponse.json(
         {
-          error: "Ответ не-JSON.",
+          error: "АТБ ответил не-JSON. Возможно региональная блокировка.",
           debug: { bodyPreview: rawText.substring(0, 500) },
         },
         { status: 502 },
@@ -101,7 +108,7 @@ export async function POST() {
     if (!json.data || !Array.isArray(json.data) || json.data.length === 0) {
       return NextResponse.json(
         {
-          error: "Пустой data[] в ответе",
+          error: "АТБ вернул пустой data[] — вероятно блокировка региона",
           debug: { json },
         },
         { status: 502 },
@@ -139,7 +146,7 @@ export async function POST() {
     const supabase = await createSupabaseAdmin();
     const { data: prev } = await supabase
       .from("rates")
-      .select("atb_actual_rate")
+      .select("atb_actual_rate, moex_cny_tod, moex_cny_tom, moex_cny_tms, moex_fetched_at, shage_rate")
       .order("fetched_at", { ascending: false })
       .limit(1)
       .single();
@@ -150,6 +157,12 @@ export async function POST() {
         cbr_rate: cbrRate ?? null,
         atb_app_rate: atbBuying,
         atb_actual_rate: prev?.atb_actual_rate ?? null,
+        // Не теряем биржевые курсы и курс 沙哥 при обновлении АТБ
+        moex_cny_tod: prev?.moex_cny_tod ?? null,
+        moex_cny_tom: prev?.moex_cny_tom ?? null,
+        moex_cny_tms: prev?.moex_cny_tms ?? null,
+        moex_fetched_at: prev?.moex_fetched_at ?? null,
+        shage_rate: prev?.shage_rate ?? null,
         source: "atb_api",
       })
       .select()

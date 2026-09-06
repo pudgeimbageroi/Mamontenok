@@ -4,9 +4,9 @@ import { useState, useMemo, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import {
   Wallet, Plus, Trash2, TrendingUp, ArrowDownRight, ArrowUpRight,
-  Coins, Banknote, Users, Building2, LineChart,
+  Coins, Banknote, Users, Building2, LineChart, UserRound,
 } from "lucide-react";
-import { cn, formatRub, formatCny, formatDate } from "@/lib/utils";
+import { cn, formatRub, formatCny, formatDate, plural } from "@/lib/utils";
 import {
   CASH_CATEGORIES,
   cashCategoryInfo,
@@ -14,6 +14,7 @@ import {
   type CashflowRow,
 } from "@/lib/cash-categories";
 import type { Deal } from "@/lib/types";
+import { channelInfo } from "@/lib/channels";
 
 export function CashClient({
   initialDeals,
@@ -31,6 +32,7 @@ export function CashClient({
   const stats = useMemo(() => {
     const dealsAtb = deals.filter((d) => (d.channel ?? "atb") === "atb");
     const dealsRshb = deals.filter((d) => d.channel === "rshb");
+    const dealsShage = deals.filter((d) => d.channel === "shage");
 
     // Общие цифры
     const incomeRub = deals.reduce((s, d) => s + (d.student_pays_rub ?? 0), 0);
@@ -44,6 +46,8 @@ export function CashClient({
     const atbOutflow = dealsAtb.reduce((s, d) => s + (d.atb_outflow_rub ?? 0), 0);
     const rshbIncome = dealsRshb.reduce((s, d) => s + (d.student_pays_rub ?? 0), 0);
     const rshbOutflow = dealsRshb.reduce((s, d) => s + (d.atb_outflow_rub ?? 0), 0);
+    const shageIncome = dealsShage.reduce((s, d) => s + (d.student_pays_rub ?? 0), 0);
+    const shageOutflow = dealsShage.reduce((s, d) => s + (d.atb_outflow_rub ?? 0), 0);
 
     // Общие траты
     const withdrawnSemyon = cashflow
@@ -64,10 +68,14 @@ export function CashClient({
     const spendingRshb = cashflow
       .filter((c) => c.channel === "rshb")
       .reduce((s, c) => s + c.amount_rub, 0);
+    const spendingShage = cashflow
+      .filter((c) => c.channel === "shage")
+      .reduce((s, c) => s + c.amount_rub, 0);
 
     const atbBalance = atbIncome - atbOutflow - spendingAtb;
     const rshbBalance = rshbIncome - rshbOutflow - spendingRshb;
-    const totalBalance = atbBalance + rshbBalance;
+    const shageBalance = shageIncome - shageOutflow - spendingShage;
+    const totalBalance = atbBalance + rshbBalance + shageBalance;
 
     const semyonAccumulated = profitRub / 2;
     const egorAccumulated = profitRub / 2;
@@ -76,9 +84,10 @@ export function CashClient({
       incomeRub, outflowRub, totalCny, profitRub, profitCny,
       withdrawnSemyon, withdrawnEgor, otherSpending,
       // Раздельные балансы
-      atbBalance, rshbBalance, totalBalance,
-      atbIncome, atbOutflow, rshbIncome, rshbOutflow,
-      spendingAtb, spendingRshb,
+      atbBalance, rshbBalance, shageBalance, totalBalance,
+      atbIncome, atbOutflow, rshbIncome, rshbOutflow, shageIncome, shageOutflow,
+      spendingAtb, spendingRshb, spendingShage,
+      shageDealsCount: dealsShage.length,
       semyonAccumulated, egorAccumulated,
       semyonToPay: semyonAccumulated - withdrawnSemyon,
       egorToPay: egorAccumulated - withdrawnEgor,
@@ -127,7 +136,7 @@ export function CashClient({
               </span>
             </div>
             <p className="text-sm text-brand-100 mt-1">
-              АТБ + Биржа РСХБ
+              АТБ + Биржа РСХБ{stats.shageDealsCount > 0 ? " + 沙哥" : ""}
             </p>
           </div>
         </div>
@@ -152,6 +161,29 @@ export function CashClient({
           spending={stats.spendingRshb}
         />
       </section>
+
+      {/* 沙哥 — компактной строкой, отдельного счёта нет */}
+      {stats.shageDealsCount > 0 && (
+        <div className="bg-rose-50 border border-rose-200 rounded-2xl px-5 py-3.5 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <UserRound className="size-4 text-rose-600 shrink-0" />
+            <div className="min-w-0">
+              <p className="text-sm font-display font-semibold text-ink-900">
+                Через 沙哥 · {stats.shageDealsCount} {plural(stats.shageDealsCount, "сделка", "сделки", "сделок")}
+              </p>
+              <p className="text-xs text-ink-500 tabular-nums truncate">
+                приход {formatRub(stats.shageIncome)} · отдали {formatRub(stats.shageOutflow)}
+              </p>
+            </div>
+          </div>
+          <p className={cn(
+            "font-display font-bold text-xl tabular-nums shrink-0",
+            stats.shageBalance < 0 ? "text-danger" : "text-rose-700",
+          )}>
+            {formatRub(stats.shageBalance)}
+          </p>
+        </div>
+      )}
 
       {/* СВОДКА — 4 KPI карточки */}
       <section className="grid grid-cols-2 lg:grid-cols-4 gap-3">
@@ -405,9 +437,9 @@ function CashflowRowItem({ row, onDelete }: { row: CashflowRow; onDelete: () => 
             {row.channel && (
               <span className={cn(
                 "text-[10px] font-medium px-1.5 py-0.5 rounded",
-                row.channel === "rshb" ? "bg-amber-100 text-amber-800" : "bg-brand-50 text-brand-700",
+                channelInfo(row.channel).badgeClass,
               )}>
-                {row.channel === "rshb" ? "РСХБ" : "АТБ"}
+                {channelInfo(row.channel).shortLabel}
               </span>
             )}
           </div>
@@ -450,7 +482,7 @@ function CashflowForm({
   const [amount, setAmount] = useState(0);
   const [method, setMethod] = useState("");
   const [comment, setComment] = useState("");
-  const [channel, setChannel] = useState<"atb" | "rshb">("atb");
+  const [channel, setChannel] = useState<"atb" | "rshb" | "shage">("atb");
   const [error, setError] = useState<string | null>(null);
   const [saving, startTransition] = useTransition();
 
@@ -529,12 +561,12 @@ function CashflowForm({
 
             <div>
               <label className="text-xs uppercase tracking-wider text-ink-500 font-medium block mb-1.5">Счёт</label>
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-3 gap-2">
                 <button
                   type="button"
                   onClick={() => setChannel("atb")}
                   className={cn(
-                    "flex items-center gap-2 p-2.5 rounded-xl border-2 text-sm font-medium transition-all",
+                    "flex items-center justify-center gap-1.5 p-2.5 rounded-xl border-2 text-sm font-medium transition-all",
                     channel === "atb"
                       ? "border-brand-500 bg-brand-50 ring-4 ring-brand-100"
                       : "border-ink-200 hover:border-ink-300",
@@ -546,13 +578,25 @@ function CashflowForm({
                   type="button"
                   onClick={() => setChannel("rshb")}
                   className={cn(
-                    "flex items-center gap-2 p-2.5 rounded-xl border-2 text-sm font-medium transition-all",
+                    "flex items-center justify-center gap-1.5 p-2.5 rounded-xl border-2 text-sm font-medium transition-all",
                     channel === "rshb"
                       ? "border-brand-500 bg-brand-50 ring-4 ring-brand-100"
                       : "border-ink-200 hover:border-ink-300",
                   )}
                 >
-                  <LineChart className="size-4" /> РСХБ (биржа)
+                  <LineChart className="size-4" /> РСХБ
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setChannel("shage")}
+                  className={cn(
+                    "flex items-center justify-center gap-1.5 p-2.5 rounded-xl border-2 text-sm font-medium transition-all",
+                    channel === "shage"
+                      ? "border-brand-500 bg-brand-50 ring-4 ring-brand-100"
+                      : "border-ink-200 hover:border-ink-300",
+                  )}
+                >
+                  <UserRound className="size-4" /> 沙哥
                 </button>
               </div>
             </div>
