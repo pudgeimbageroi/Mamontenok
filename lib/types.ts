@@ -5,27 +5,27 @@
 import type { DealStatus } from "./deal-statuses";
 
 /** Канал закупки юаней */
-export type Channel = "atb" | "rshb" | "shage";
-
-/** Тикеры MOEX для CNY */
-export type MoexTicker = "CNYRUB_TOD" | "CNYRUB_TOM" | "CNYRUB_TMS";
+export type Channel = "atb" | "atb_ip" | "shage";
 
 export type RateRow = {
   id: string;
   cbr_rate: number | null;
+  /** Курс АТБ из приложения (физлицо). К нему прибавляется ATB_PREMIUM */
   atb_app_rate: number | null;
   atb_actual_rate: number | null;
-  // MOEX (биржа) — три тикера
-  moex_cny_tod: number | null;
-  moex_cny_tom: number | null;
-  moex_cny_tms: number | null;
-  moex_fetched_at: string | null;
-  // 沙哥 — курс посредника, вводится вручную
+  /** Курс АТБ на ИП — вводится вручную из бизнес-приложения */
+  atb_ip_rate: number | null;
+  /** Курс 沙哥 — вводится вручную, это сразу себестоимость */
   shage_rate: number | null;
-  source: "manual" | "cbr_api" | "atb_api" | "moex_api";
+  source: "manual" | "cbr_api" | "atb_api";
   fetched_at: string;
 };
 
+/**
+ * Режим наценки.
+ * В интерфейсе оставлен только `custom_rate` — свой курс.
+ * Остальные значения сохранены для совместимости со старыми записями.
+ */
 export type MarkupMode = "percent" | "fixed_rub" | "custom_rate";
 
 export type MarkupSettings = {
@@ -34,10 +34,6 @@ export type MarkupSettings = {
   percent_value: number;
   fixed_rub_value: number;
   custom_rate_value: number;
-  // РСХБ настройки (редактируемые)
-  rshb_broker_pct: number; // 0.00355 (тариф "Инвестор")
-  rshb_spread_pct: number; // 0.0003
-  rshb_default_ticker: MoexTicker;
   updated_at: string;
   updated_by: string | null;
 };
@@ -58,14 +54,13 @@ export type Deal = {
   city: string | null;
   purpose: string | null;
   amount_cny: number;
+  /** Курс закупки — снапшот на момент сделки, независимо от канала */
   atb_rate: number;
   cbr_rate: number | null;
   my_rate: number;
   status: DealStatus;
   comment: string | null;
-  // Канал закупки
   channel: Channel;
-  moex_ticker: MoexTicker | null;
   // computed
   student_pays_rub: number;
   atb_outflow_rub: number;
@@ -89,12 +84,4 @@ export type DealInput = {
   status: DealStatus;
   comment?: string | null;
   channel?: Channel;
-  moex_ticker?: MoexTicker | null;
 };
-
-// ═══════════════════════════════════════════════════════════════════
-// КОНСТАНТЫ по умолчанию (можно переопределить из markup_settings)
-// ═══════════════════════════════════════════════════════════════════
-export const RSHB_BROKER_PCT_DEFAULT = 0.00355; // тариф "Инвестор"
-export const RSHB_SPREAD_PCT_DEFAULT = 0.00030;
-export const RSHB_DEFAULT_TICKER: MoexTicker = "CNYRUB_TMS";

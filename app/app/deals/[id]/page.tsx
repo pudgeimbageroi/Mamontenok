@@ -37,7 +37,6 @@ export default async function EditDealPage({
         status: deal.status,
         comment: deal.comment ?? "",
         channel: deal.channel ?? "atb",
-        moex_ticker: deal.moex_ticker ?? null,
       }}
       refs={{
         universities: allRefs.filter((r) => r.type === "university"),

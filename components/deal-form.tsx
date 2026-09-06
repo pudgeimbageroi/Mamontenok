@@ -3,10 +3,10 @@
 import { useState, useTransition, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { ArrowLeft, Trash2, Save, AlertTriangle, Building2, LineChart, UserRound } from "lucide-react";
+import { ArrowLeft, Trash2, Save, AlertTriangle, Building2, Briefcase, UserRound } from "lucide-react";
 import { cn, formatRub, formatCny } from "@/lib/utils";
 import { DEAL_STATUSES, type DealStatus } from "@/lib/deal-statuses";
-import type { Deal, ReferenceItem, Channel, MoexTicker } from "@/lib/types";
+import type { Deal, ReferenceItem, Channel } from "@/lib/types";
 import { channelInfo } from "@/lib/channels";
 
 const MIN_PROFIT_WARNING = 5000;
@@ -25,7 +25,6 @@ export type DealFormInitial = {
   status: DealStatus;
   comment: string;
   channel?: Channel;
-  moex_ticker?: MoexTicker | null;
 };
 
 export function DealForm({
@@ -41,7 +40,6 @@ export function DealForm({
   const [form, setForm] = useState({
     ...initial,
     channel: (initial.channel ?? "atb") as Channel,
-    moex_ticker: (initial.moex_ticker ?? null) as MoexTicker | null,
   });
   const [saving, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
@@ -83,7 +81,6 @@ export function DealForm({
       status: form.status,
       comment: form.comment.trim() || null,
       channel: form.channel,
-      moex_ticker: form.channel === "rshb" ? form.moex_ticker : null,
     };
 
     startTransition(async () => {
@@ -200,14 +197,11 @@ export function DealForm({
             sublabel="через приложение"
           />
           <ChannelButton
-            active={form.channel === "rshb"}
-            onClick={() => {
-              set("channel", "rshb");
-              if (!form.moex_ticker) set("moex_ticker", "CNYRUB_TMS");
-            }}
-            icon={<LineChart className="size-5" />}
-            title="Биржа РСХБ"
-            sublabel="тариф Инвестор"
+            active={form.channel === "atb_ip"}
+            onClick={() => set("channel", "atb_ip")}
+            icon={<Briefcase className="size-5" />}
+            title="АТБ · ИП"
+            sublabel="бизнес-приложение"
           />
           <ChannelButton
             active={form.channel === "shage"}
@@ -217,30 +211,6 @@ export function DealForm({
             sublabel="посредник"
           />
         </div>
-        {form.channel === "rshb" && (
-          <div>
-            <label className="block text-xs uppercase tracking-wider text-ink-500 font-medium mb-2">
-              Тикер MOEX
-            </label>
-            <div className="grid grid-cols-3 gap-2">
-              {(["CNYRUB_TMS", "CNYRUB_TOD", "CNYRUB_TOM"] as MoexTicker[]).map((t) => (
-                <button
-                  key={t}
-                  type="button"
-                  onClick={() => set("moex_ticker", t)}
-                  className={cn(
-                    "text-xs font-medium px-3 py-2 rounded-lg transition-colors border",
-                    form.moex_ticker === t
-                      ? "bg-brand-500 text-white border-brand-500"
-                      : "bg-white border-ink-200 text-ink-700 hover:border-ink-300",
-                  )}
-                >
-                  {t.replace("CNYRUB_", "")}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
       </div>
 
       {/* Курсы и сумма */}

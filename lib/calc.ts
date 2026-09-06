@@ -2,17 +2,13 @@
  * Чистые формулы калькулятора — без зависимостей от React/БД.
  * Один источник истины для логики цены и прибыли.
  *
- * Поддерживает два канала закупки юаней:
- *   1. АТБ — курс из приложения АТБ + 0.03 (списание фактическое)
- *   2. Биржа РСХБ — MOEX × (1 + брокер% + спред%)
+ * Три канала закупки юаней:
+ *   1. АТБ (физлицо) — курс из приложения + 0.03 (фактическое списание)
+ *   2. АТБ на ИП     — курс из бизнес-приложения, вводится вручную
+ *   3. 沙哥          — курс посредника, вводится вручную
  */
 
-import type { MarkupSettings, RateRow, Channel, MoexTicker } from "./types";
-import {
-  RSHB_BROKER_PCT_DEFAULT,
-  RSHB_SPREAD_PCT_DEFAULT,
-  RSHB_DEFAULT_TICKER,
-} from "./types";
+import type { MarkupSettings, RateRow, Channel } from "./types";
 
 /**
  * АТБ всегда наценяет 0.03 ₽ сверху курса из приложения при реальном списании.
@@ -21,7 +17,7 @@ import {
 export const ATB_PREMIUM = 0.03;
 
 /**
- * Эффективный курс АТБ для расчётов = курс из приложения + 0.03.
+ * Эффективный курс АТБ (физлицо) = курс из приложения + 0.03.
  */
 export function effectiveAtbRate(rates: RateRow): number {
   const app = rates.atb_app_rate ?? 0;
@@ -29,76 +25,26 @@ export function effectiveAtbRate(rates: RateRow): number {
   return app + ATB_PREMIUM;
 }
 
-// ═══════════════════════════════════════════════════════════════════
-// БИРЖА РСХБ
-// ═══════════════════════════════════════════════════════════════════
-
-/** Достать MOEX курс по тикеру из RateRow */
-export function moexRateByTicker(rates: RateRow, ticker: MoexTicker): number {
-  switch (ticker) {
-    case "CNYRUB_TOD":
-      return rates.moex_cny_tod ?? 0;
-    case "CNYRUB_TOM":
-      return rates.moex_cny_tom ?? 0;
-    case "CNYRUB_TMS":
-      return rates.moex_cny_tms ?? 0;
-  }
-}
-
 /**
- * Себестоимость через РСХБ.
- * Формула: MOEX × (1 + брокер% + спред%)
- * Тариф "Инвестор" = 0.00355, спред ≈ 0.0003 → множитель 1.00385
+ * Курс АТБ на ИП — что вписали, то и есть. Премия не добавляется.
  */
-export function rshbBaseRate(
-  moexRate: number,
-  brokerPct = RSHB_BROKER_PCT_DEFAULT,
-  spreadPct = RSHB_SPREAD_PCT_DEFAULT,
-): number {
-  if (moexRate <= 0) return 0;
-  return moexRate * (1 + brokerPct + spreadPct);
+export function effectiveAtbIpRate(rates: RateRow): number {
+  return rates.atb_ip_rate ?? 0;
 }
-
-/** Себестоимость через РСХБ, используя настройки из markup */
-export function effectiveRshbRate(
-  rates: RateRow,
-  markup: MarkupSettings,
-  ticker: MoexTicker = markup.rshb_default_ticker ?? RSHB_DEFAULT_TICKER,
-): number {
-  const moex = moexRateByTicker(rates, ticker);
-  return rshbBaseRate(
-    moex,
-    markup.rshb_broker_pct ?? RSHB_BROKER_PCT_DEFAULT,
-    markup.rshb_spread_pct ?? RSHB_SPREAD_PCT_DEFAULT,
-  );
-}
-
-// ═══════════════════════════════════════════════════════════════════
-// 沙哥 (посредник)
-// ═══════════════════════════════════════════════════════════════════
 
 /**
- * Себестоимость через 沙哥 — это просто его курс, который он назвал.
- * Никаких комиссий и наценок: что сказал, то и платим.
+ * Себестоимость через 沙哥 — просто его курс, который он назвал.
+ * Никаких комиссий и наценок.
  */
 export function effectiveShageRate(rates: RateRow): number {
   return rates.shage_rate ?? 0;
 }
 
-// ═══════════════════════════════════════════════════════════════════
-// УНИВЕРСАЛЬНЫЙ ВЫБОР КАНАЛА
-// ═══════════════════════════════════════════════════════════════════
-
-/** Универсальный "мой закупочный курс" в зависимости от канала */
-export function baseRateByChannel(
-  rates: RateRow,
-  markup: MarkupSettings,
-  channel: Channel,
-  moexTicker?: MoexTicker,
-): number {
+/** Универсальный закупочный курс в зависимости от канала */
+export function baseRateByChannel(rates: RateRow, channel: Channel): number {
   switch (channel) {
-    case "rshb":
-      return effectiveRshbRate(rates, markup, moexTicker);
+    case "atb_ip":
+      return effectiveAtbIpRate(rates);
     case "shage":
       return effectiveShageRate(rates);
     case "atb":
@@ -108,37 +54,26 @@ export function baseRateByChannel(
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// НАЦЕНКА / МОЙ КУРС ДЛЯ СТУДЕНТА
+// МОЙ КУРС ДЛЯ СТУДЕНТА
 // ═══════════════════════════════════════════════════════════════════
 
 /**
- * Мой курс для студента — зависит от выбранного режима наценки.
- * База (ЦБ / кастомный) не привязана к каналу закупки.
+ * Мой курс для студента — всегда тот, который выставили руками.
+ * Процентная наценка от ЦБ убрана: слишком негибко, курс ставим сами.
  */
-export function computeMyRate(rates: RateRow, markup: MarkupSettings): number {
-  const cbr = rates.cbr_rate ?? 0;
-  switch (markup.mode) {
-    case "custom_rate":
-      return markup.custom_rate_value;
-    case "fixed_rub":
-      // Режим оставлен для бэк-совместимости, в UI скрыт.
-      return cbr + markup.fixed_rub_value;
-    case "percent":
-    default:
-      return cbr * (1 + markup.percent_value / 100);
-  }
+export function computeMyRate(_rates: RateRow, markup: MarkupSettings): number {
+  return markup.custom_rate_value ?? 0;
 }
 
 /**
- * Прибыль с 1 ¥ (в ₽) — теперь зависит от канала закупки.
+ * Прибыль с 1 ¥ (в ₽) — зависит от канала закупки.
  */
 export function profitPerYuan(
   rates: RateRow,
   markup: MarkupSettings,
   channel: Channel = "atb",
-  moexTicker?: MoexTicker,
 ): number {
-  return computeMyRate(rates, markup) - baseRateByChannel(rates, markup, channel, moexTicker);
+  return computeMyRate(rates, markup) - baseRateByChannel(rates, channel);
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -157,10 +92,9 @@ export function calcDealFromCny(
   rates: RateRow,
   markup: MarkupSettings,
   channel: Channel = "atb",
-  moexTicker?: MoexTicker,
 ): DealFromCny {
   const myRate = computeMyRate(rates, markup);
-  const base = baseRateByChannel(rates, markup, channel, moexTicker);
+  const base = baseRateByChannel(rates, channel);
   const studentPaysRub = amountCny * myRate;
   const atbOutflowRub = amountCny * base;
   const profitRub = studentPaysRub - atbOutflowRub;
@@ -184,10 +118,9 @@ export function calcDealFromRub(
   rates: RateRow,
   markup: MarkupSettings,
   channel: Channel = "atb",
-  moexTicker?: MoexTicker,
 ): DealFromRub {
   const myRate = computeMyRate(rates, markup);
-  const base = baseRateByChannel(rates, markup, channel, moexTicker);
+  const base = baseRateByChannel(rates, channel);
   const amountCny = myRate > 0 ? budgetRub / myRate : 0;
   const atbOutflowRub = amountCny * base;
   const profitRub = budgetRub - atbOutflowRub;

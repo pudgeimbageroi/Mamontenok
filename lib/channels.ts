@@ -1,6 +1,6 @@
 /**
  * Справочник каналов закупки юаней.
- * Один источник истины для лейблов, цветов и иконок.
+ * Один источник истины для лейблов, цветов и подписей.
  */
 
 import type { Channel } from "./types";
@@ -12,20 +12,24 @@ export const CHANNELS: {
   sublabel: string;
   /** Классы для бейджа в списках */
   badgeClass: string;
+  /** Курс вводится вручную (нет автоподтяжки из API) */
+  manualRate: boolean;
 }[] = [
   {
     value: "atb",
-    label: "АТБ Bank",
+    label: "АТБ · физлицо",
     shortLabel: "АТБ",
-    sublabel: "через приложение банка",
+    sublabel: "курс из приложения + 0.03",
     badgeClass: "bg-brand-50 text-brand-700",
+    manualRate: false,
   },
   {
-    value: "rshb",
-    label: "Биржа РСХБ",
-    shortLabel: "РСХБ",
-    sublabel: "MOEX · тариф Инвестор",
-    badgeClass: "bg-amber-100 text-amber-800",
+    value: "atb_ip",
+    label: "АТБ · ИП",
+    shortLabel: "АТБ ИП",
+    sublabel: "курс из бизнес-приложения",
+    badgeClass: "bg-emerald-100 text-emerald-800",
+    manualRate: true,
   },
   {
     value: "shage",
@@ -33,6 +37,7 @@ export const CHANNELS: {
     shortLabel: "沙哥",
     sublabel: "посредник · курс вручную",
     badgeClass: "bg-rose-100 text-rose-800",
+    manualRate: true,
   },
 ];
 
