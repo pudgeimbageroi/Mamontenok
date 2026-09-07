@@ -31,5 +31,7 @@ export type CashflowRow = {
   method: string | null;
   comment: string | null;
   channel: "atb" | "atb_ip" | "shage" | null;
+  visibility: "joint" | "private";
+  owner_id: string | null;
   created_at: string;
 };

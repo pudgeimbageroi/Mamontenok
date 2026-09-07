@@ -4,12 +4,13 @@ import { useMemo, useState, useCallback } from "react";
 import Link from "next/link";
 import {
   Plus, Search, ChevronRight, SlidersHorizontal, X,
-  Calendar, TrendingUp, Receipt, Wallet,
+  Calendar, TrendingUp, Receipt, Wallet, Lock,
 } from "lucide-react";
 import { cn, formatRub, formatCny, formatDate } from "@/lib/utils";
 import { DEAL_STATUSES, statusInfo, type DealStatus } from "@/lib/deal-statuses";
 import type { Deal, Channel } from "@/lib/types";
 import { CHANNELS, channelInfo } from "@/lib/channels";
+import type { ViewMode } from "@/lib/visibility";
 
 // ═══════════════════════════════════════════════════════════════════
 // ПЕРИОДЫ
@@ -58,7 +59,13 @@ function resolvePeriod(preset: PeriodPreset, customFrom: string, customTo: strin
   }
 }
 
-export function DealsList({ initialDeals }: { initialDeals: Deal[] }) {
+export function DealsList({
+  initialDeals,
+  mode = "joint",
+}: {
+  initialDeals: Deal[];
+  mode?: ViewMode;
+}) {
   const [deals] = useState(initialDeals);
 
   // ── Фильтры
@@ -110,12 +117,15 @@ export function DealsList({ initialDeals }: { initialDeals: Deal[] }) {
     const profitCny = filtered.reduce((s, d) => {
       return d.atb_rate > 0 ? s + (d.profit_rub ?? 0) / d.atb_rate : s;
     }, 0);
+    // Моя доля: с личной сделки всё, с общей половина
+    const myShare = filtered.reduce((s, d) => s + (d.owner_share_rub ?? 0), 0);
     return {
       count,
       revenue,
       totalCny,
       profit,
       profitCny,
+      myShare,
       avgCheckRub: count > 0 ? revenue / count : 0,
       avgCheckCny: count > 0 ? totalCny / count : 0,
     };
@@ -221,9 +231,13 @@ export function DealsList({ initialDeals }: { initialDeals: Deal[] }) {
             />
             <CounterItem
               icon={<TrendingUp className="size-4" />}
-              label="Прибыль"
-              value={formatRub(totals.profit)}
-              subvalue={totals.profitCny > 0 ? `≈ ${formatCny(totals.profitCny)}` : undefined}
+              label={mode === "joint" ? "Прибыль" : "Моя доля"}
+              value={formatRub(mode === "joint" ? totals.profit : totals.myShare)}
+              subvalue={
+                mode === "joint"
+                  ? totals.profitCny > 0 ? `≈ ${formatCny(totals.profitCny)}` : undefined
+                  : `оборот прибыли ${formatRub(totals.profit)}`
+              }
             />
             <CounterItem
               icon={<Calendar className="size-4" />}
@@ -528,6 +542,11 @@ function DealRow({ deal }: { deal: Deal }) {
             <span className={cn("text-[10px] font-medium px-1.5 py-0.5 rounded shrink-0", ch.badgeClass)}>
               {ch.shortLabel}
             </span>
+            {deal.visibility === "private" && (
+              <span className="text-[10px] font-medium px-1.5 py-0.5 rounded shrink-0 bg-amber-100 text-amber-800 inline-flex items-center gap-0.5">
+                <Lock className="size-2.5" /> Личная
+              </span>
+            )}
           </div>
           <p className="text-xs text-ink-500 truncate">
             {[deal.university, deal.purpose].filter(Boolean).join(" · ") || "—"}

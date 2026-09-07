@@ -3,25 +3,29 @@
  * PATCH  /api/deals/[id] — обновить
  * DELETE /api/deals/[id] — удалить
  *
- * Все изменения дублируются в общую группу с партнёром.
+ * ⚠️ Самая уязвимая точка: сюда можно прийти с прямым UUID в обход списка.
+ * Поэтому каждый метод начинается с проверки доступа через fetchDealById —
+ * чужая личная сделка отдаёт 404, как будто её не существует.
  */
 
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/auth";
 import { createSupabaseAdmin } from "@/lib/supabase/server";
-import { notifyOtherPartners, fmtRub, fmtCny, esc } from "@/lib/notifications";
+import { fetchDealById } from "@/lib/deals-query";
+import { notifyDealEvent, fmtRub, fmtCny, esc } from "@/lib/notifications";
 import { statusInfo } from "@/lib/deal-statuses";
 import { channelInfo } from "@/lib/channels";
+
+const NOT_FOUND = { error: "Сделка не найдена" };
 
 export async function GET(_: Request, { params }: { params: Promise<{ id: string }> }) {
   const session = await getSession();
   if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const { id } = await params;
-  const supabase = await createSupabaseAdmin();
-  const { data, error } = await supabase.from("deals").select("*").eq("id", id).single();
-  if (error) return NextResponse.json({ error: error.message }, { status: 404 });
-  return NextResponse.json(data);
+  const deal = await fetchDealById(session, id);
+  if (!deal) return NextResponse.json(NOT_FOUND, { status: 404 });
+  return NextResponse.json(deal);
 }
 
 export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -29,15 +33,13 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const { id } = await params;
+
+  // Доступ + старое состояние одним запросом
+  const oldDeal = await fetchDealById(session, id);
+  if (!oldDeal) return NextResponse.json(NOT_FOUND, { status: 404 });
+
   const body = await req.json();
   const supabase = await createSupabaseAdmin();
-
-  // Старое состояние — чтобы понять что именно изменилось
-  const { data: oldDeal } = await supabase
-    .from("deals")
-    .select("status, student_name, amount_cny, my_rate, atb_rate, channel, profit_rub")
-    .eq("id", id)
-    .single();
 
   const updates: Record<string, unknown> = { updated_by: session.profileId };
   for (const key of [
@@ -47,6 +49,9 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   ]) {
     if (key in body) updates[key] = body[key];
   }
+  // visibility и owner_id намеренно НЕ обновляются: тип сделки задаётся
+  // при создании и дальше неизменен. Иначе перевод общей сделки в личные
+  // выглядел бы для партнёра как бесследное исчезновение.
 
   const { data, error } = await supabase
     .from("deals")
@@ -56,25 +61,24 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     .single();
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
-  // ─── Уведомления ───
+  // ─── Уведомления (для личных не отправится ничего) ───
   const profit = Number(data.profit_rub ?? 0);
   const name = esc(data.student_name);
 
-  if (oldDeal?.status !== data.status) {
-    // Сменился статус — главное событие
+  if (oldDeal.status !== data.status) {
     const info = statusInfo(data.status);
     const isClosed = data.status === "completed";
-    await notifyOtherPartners(
+    notifyDealEvent(
+      data.visibility,
       session.telegramId,
       (isClosed ? `✅ <b>Сделка закрыта</b>\n\n` : `🔄 <b>Статус изменён</b>\n\n`) +
         `👤 ${name}\n` +
         `💴 ${fmtCny(Number(data.amount_cny))} · ${channelInfo(data.channel).shortLabel}\n` +
-        (oldDeal ? `📍 ${statusInfo(oldDeal.status).label} → <b>${info.label}</b>\n` : `📍 ${info.label}\n`) +
+        `📍 ${statusInfo(oldDeal.status).label} → <b>${info.label}</b>\n` +
         `📈 Прибыль: <b>${fmtRub(profit)}</b>\n\n` +
         `<i>${isClosed ? "Закрыл" : "Обновил"}: ${esc(session.displayName)}</i>`,
     ).catch(() => {});
-  } else if (oldDeal) {
-    // Статус тот же — смотрим, менялись ли деньги
+  } else {
     const changes: string[] = [];
     if (Number(oldDeal.amount_cny) !== Number(data.amount_cny)) {
       changes.push(`💴 ${fmtCny(Number(oldDeal.amount_cny))} → <b>${fmtCny(Number(data.amount_cny))}</b>`);
@@ -90,9 +94,9 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
     }
 
     if (changes.length > 0) {
-      const oldProfit = Number(oldDeal.profit_rub ?? 0);
-      const diff = profit - oldProfit;
-      await notifyOtherPartners(
+      const diff = profit - Number(oldDeal.profit_rub ?? 0);
+      notifyDealEvent(
+        data.visibility,
         session.telegramId,
         `✏️ <b>Сделка изменена</b>\n\n` +
           `👤 ${name}\n` +
@@ -112,28 +116,23 @@ export async function DELETE(_: Request, { params }: { params: Promise<{ id: str
   if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
   const { id } = await params;
+
+  const doomed = await fetchDealById(session, id);
+  if (!doomed) return NextResponse.json(NOT_FOUND, { status: 404 });
+
   const supabase = await createSupabaseAdmin();
-
-  // Забираем данные до удаления — чтобы было что написать в уведомлении
-  const { data: doomed } = await supabase
-    .from("deals")
-    .select("student_name, amount_cny, profit_rub, status")
-    .eq("id", id)
-    .single();
-
   const { error } = await supabase.from("deals").delete().eq("id", id);
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
-  if (doomed) {
-    await notifyOtherPartners(
-      session.telegramId,
-      `🗑 <b>Сделка удалена</b>\n\n` +
-        `👤 ${esc(doomed.student_name)}\n` +
-        `💴 ${fmtCny(Number(doomed.amount_cny))}\n` +
-        `📈 Была прибыль: ${fmtRub(Number(doomed.profit_rub ?? 0))}\n\n` +
-        `<i>Удалил: ${esc(session.displayName)}</i>`,
-    ).catch(() => {});
-  }
+  notifyDealEvent(
+    doomed.visibility,
+    session.telegramId,
+    `🗑 <b>Сделка удалена</b>\n\n` +
+      `👤 ${esc(doomed.student_name)}\n` +
+      `💴 ${fmtCny(Number(doomed.amount_cny))}\n` +
+      `📈 Была прибыль: ${fmtRub(Number(doomed.profit_rub ?? 0))}\n\n` +
+      `<i>Удалил: ${esc(session.displayName)}</i>`,
+  ).catch(() => {});
 
   return NextResponse.json({ ok: true });
 }

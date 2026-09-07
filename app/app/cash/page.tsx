@@ -1,20 +1,25 @@
-import { createSupabaseAdmin } from "@/lib/supabase/server";
+import { redirect } from "next/navigation";
+import { getSession } from "@/lib/auth";
+import { fetchDeals, fetchCashflow, getViewMode } from "@/lib/deals-query";
+import { isOwner } from "@/lib/visibility";
 import { CashClient } from "./cash-client";
-import type { Deal } from "@/lib/types";
-import type { CashflowRow } from "@/lib/cash-categories";
 
 export default async function CashPage() {
-  const supabase = await createSupabaseAdmin();
+  const session = await getSession();
+  if (!session) redirect("/");
 
-  const [dealsRes, cashRes] = await Promise.all([
-    supabase.from("deals").select("*").order("date", { ascending: false }),
-    supabase.from("cashflow").select("*").order("date", { ascending: false }),
+  const mode = await getViewMode(session);
+  const [deals, cashflow] = await Promise.all([
+    fetchDeals(session, mode),
+    fetchCashflow(session, mode),
   ]);
 
   return (
     <CashClient
-      initialDeals={(dealsRes.data ?? []) as Deal[]}
-      initialCashflow={(cashRes.data ?? []) as CashflowRow[]}
+      initialDeals={deals}
+      initialCashflow={cashflow}
+      mode={mode}
+      canCreatePrivate={isOwner(session)}
     />
   );
 }

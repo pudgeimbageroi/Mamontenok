@@ -1,13 +1,14 @@
-import { createSupabaseAdmin } from "@/lib/supabase/server";
+import { redirect } from "next/navigation";
+import { getSession } from "@/lib/auth";
+import { fetchDeals, getViewMode } from "@/lib/deals-query";
 import { DealsList } from "./deals-list";
-import type { Deal } from "@/lib/types";
 
 export default async function DealsPage() {
-  const supabase = await createSupabaseAdmin();
-  const { data } = await supabase
-    .from("deals")
-    .select("*")
-    .order("date", { ascending: false });
+  const session = await getSession();
+  if (!session) redirect("/");
 
-  return <DealsList initialDeals={(data ?? []) as Deal[]} />;
+  const mode = await getViewMode(session);
+  const deals = await fetchDeals(session, mode);
+
+  return <DealsList initialDeals={deals} mode={mode} />;
 }

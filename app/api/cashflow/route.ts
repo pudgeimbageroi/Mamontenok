@@ -6,21 +6,19 @@
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/auth";
 import { createSupabaseAdmin } from "@/lib/supabase/server";
-import { notifyOtherPartners, fmtRub, esc } from "@/lib/notifications";
+import { notifyDealEvent, fmtRub, esc } from "@/lib/notifications";
 import { cashCategoryInfo } from "@/lib/cash-categories";
 import { channelInfo } from "@/lib/channels";
+import { fetchCashflow, getViewMode } from "@/lib/deals-query";
+import { isOwner } from "@/lib/visibility";
 
 export async function GET() {
   const session = await getSession();
   if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const supabase = await createSupabaseAdmin();
-  const { data, error } = await supabase
-    .from("cashflow")
-    .select("*")
-    .order("date", { ascending: false });
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json(data);
+  const mode = await getViewMode(session);
+  const rows = await fetchCashflow(session, mode);
+  return NextResponse.json(rows);
 }
 
 export async function POST(req: Request) {
@@ -32,6 +30,10 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Не хватает обязательных полей" }, { status: 400 });
   }
 
+  // Личную операцию может создать только владелец
+  const wantsPrivate = body.visibility === "private" && isOwner(session);
+  const visibility = wantsPrivate ? "private" : "joint";
+
   const supabase = await createSupabaseAdmin();
   const { data, error } = await supabase
     .from("cashflow")
@@ -42,6 +44,8 @@ export async function POST(req: Request) {
       method: body.method ?? null,
       comment: body.comment ?? null,
       channel: body.channel ?? null,
+      visibility,
+      owner_id: session.profileId,
       created_by: session.profileId,
     })
     .select()
@@ -49,9 +53,10 @@ export async function POST(req: Request) {
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
-  // 🔔 Push партнёру + в общую группу
+  // 🔔 Для личной операции не отправится ничего
   const cat = cashCategoryInfo(data.category);
-  notifyOtherPartners(
+  notifyDealEvent(
+    data.visibility,
     session.telegramId,
     `💸 <b>Движение в кассе</b>\n\n` +
       `${cat.emoji} ${cat.label}\n` +

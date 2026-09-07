@@ -15,13 +15,18 @@ import {
 } from "@/lib/cash-categories";
 import type { Deal } from "@/lib/types";
 import { channelInfo } from "@/lib/channels";
+import type { ViewMode } from "@/lib/visibility";
 
 export function CashClient({
   initialDeals,
   initialCashflow,
+  mode = "joint",
+  canCreatePrivate = false,
 }: {
   initialDeals: Deal[];
   initialCashflow: CashflowRow[];
+  mode?: ViewMode;
+  canCreatePrivate?: boolean;
 }) {
   const [deals] = useState(initialDeals);
   const [cashflow, setCashflow] = useState(initialCashflow);
@@ -77,8 +82,9 @@ export function CashClient({
     const shageBalance = shageIncome - shageOutflow - spendingShage;
     const totalBalance = atbBalance + atbIpBalance + shageBalance;
 
-    const semyonAccumulated = profitRub / 2;
-    const egorAccumulated = profitRub / 2;
+    // Доли берём из БД: личная сделка даёт владельцу 100%, общая — 50/50
+    const semyonAccumulated = deals.reduce((s, d) => s + (d.owner_share_rub ?? 0), 0);
+    const egorAccumulated = deals.reduce((s, d) => s + (d.partner_share_rub ?? 0), 0);
 
     return {
       incomeRub, outflowRub, totalCny, profitRub, profitCny,
@@ -216,26 +222,33 @@ export function CashClient({
         />
       </section>
 
-      {/* ДОЛИ ПАРТНЁРОВ */}
+      {/* ДОЛИ ПАРТНЁРОВ.
+          В личном режиме доля Егора всегда 0 — прячем, чтобы не путала. */}
       <section>
         <h2 className="text-lg font-display font-semibold text-ink-900 mb-3 flex items-center gap-2">
-          <Users className="size-5 text-brand-500" /> Доли партнёров — 50 / 50
+          <Users className="size-5 text-brand-500" />
+          {mode === "private" ? "Личная прибыль" : "Доли партнёров — 50 / 50"}
         </h2>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div className={cn(
+          "grid gap-3",
+          mode === "private" ? "grid-cols-1" : "grid-cols-1 sm:grid-cols-2",
+        )}>
           <PartnerCard
-            name="Семён (я)"
+            name={mode === "private" ? "Семён (личные сделки)" : "Семён (я)"}
             emoji="🪨"
             accumulated={stats.semyonAccumulated}
             withdrawn={stats.withdrawnSemyon}
             toPay={stats.semyonToPay}
           />
-          <PartnerCard
-            name="Егор"
-            emoji="🪨"
-            accumulated={stats.egorAccumulated}
-            withdrawn={stats.withdrawnEgor}
-            toPay={stats.egorToPay}
-          />
+          {mode !== "private" && (
+            <PartnerCard
+              name="Егор"
+              emoji="🪨"
+              accumulated={stats.egorAccumulated}
+              withdrawn={stats.withdrawnEgor}
+              toPay={stats.egorToPay}
+            />
+          )}
         </div>
       </section>
 
@@ -267,7 +280,14 @@ export function CashClient({
       </section>
 
       {/* Modal формы */}
-      {showForm && <CashflowForm onClose={() => setShowForm(false)} onCreated={handleCreated} />}
+      {showForm && (
+        <CashflowForm
+          onClose={() => setShowForm(false)}
+          onCreated={handleCreated}
+          canCreatePrivate={canCreatePrivate}
+          defaultPrivate={mode === "private"}
+        />
+      )}
     </div>
   );
 }
@@ -472,9 +492,13 @@ function CashflowRowItem({ row, onDelete }: { row: CashflowRow; onDelete: () => 
 function CashflowForm({
   onClose,
   onCreated,
+  canCreatePrivate = false,
+  defaultPrivate = false,
 }: {
   onClose: () => void;
   onCreated: (row: CashflowRow) => void;
+  canCreatePrivate?: boolean;
+  defaultPrivate?: boolean;
 }) {
   const today = new Date().toISOString().slice(0, 10);
   const [date, setDate] = useState(today);
@@ -483,6 +507,7 @@ function CashflowForm({
   const [method, setMethod] = useState("");
   const [comment, setComment] = useState("");
   const [channel, setChannel] = useState<"atb" | "atb_ip" | "shage">("atb");
+  const [isPrivate, setIsPrivate] = useState(defaultPrivate);
   const [error, setError] = useState<string | null>(null);
   const [saving, startTransition] = useTransition();
 
@@ -499,6 +524,7 @@ function CashflowForm({
           method: method.trim() || null,
           comment: comment.trim() || null,
           channel,
+          visibility: isPrivate ? "private" : "joint",
         }),
       });
       const data = await res.json();
@@ -519,6 +545,44 @@ function CashflowForm({
           </h2>
 
           <div className="space-y-4">
+            {/* Тип операции — только владельцу */}
+            {canCreatePrivate && (
+              <div className={cn(
+                "flex items-center justify-between gap-3 border-2 rounded-xl px-4 py-3 transition-colors",
+                isPrivate ? "bg-amber-50 border-amber-300" : "bg-white border-ink-200",
+              )}>
+                <div className="min-w-0">
+                  <p className="text-sm font-display font-semibold text-ink-900">
+                    {isPrivate ? "Личная операция" : "Общая операция"}
+                  </p>
+                  <p className="text-xs text-ink-500">
+                    {isPrivate ? "Егор её не увидит" : "Видна обоим, уйдёт в группу"}
+                  </p>
+                </div>
+                <div className="flex gap-1 bg-ink-100 rounded-lg p-1 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setIsPrivate(false)}
+                    className={cn(
+                      "text-xs font-medium px-3 py-1.5 rounded-md transition-all",
+                      !isPrivate ? "bg-white text-ink-900 shadow-sm" : "text-ink-500",
+                    )}
+                  >
+                    Общая
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsPrivate(true)}
+                    className={cn(
+                      "text-xs font-medium px-3 py-1.5 rounded-md transition-all",
+                      isPrivate ? "bg-amber-500 text-white shadow-sm" : "text-ink-500",
+                    )}
+                  >
+                    Личная
+                  </button>
+                </div>
+              </div>
+            )}
             <div>
               <label className="text-xs uppercase tracking-wider text-ink-500 font-medium block mb-1.5">Дата</label>
               <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className={inputCls} />

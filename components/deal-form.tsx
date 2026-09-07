@@ -3,7 +3,7 @@
 import { useState, useTransition, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { ArrowLeft, Trash2, Save, AlertTriangle, Building2, Briefcase, UserRound } from "lucide-react";
+import { ArrowLeft, Trash2, Save, AlertTriangle, Building2, Briefcase, UserRound, Lock, Users } from "lucide-react";
 import { cn, formatRub, formatCny } from "@/lib/utils";
 import { DEAL_STATUSES, type DealStatus } from "@/lib/deal-statuses";
 import type { Deal, ReferenceItem, Channel } from "@/lib/types";
@@ -25,21 +25,26 @@ export type DealFormInitial = {
   status: DealStatus;
   comment: string;
   channel?: Channel;
+  visibility?: "joint" | "private";
 };
 
 export function DealForm({
   initial,
   refs,
   isEdit = false,
+  canCreatePrivate = false,
 }: {
   initial: DealFormInitial;
   refs: { universities: ReferenceItem[]; cities: ReferenceItem[]; purposes: ReferenceItem[] };
   isEdit?: boolean;
+  /** Тумблер «Общая / Личная» рендерится только владельцу сервиса */
+  canCreatePrivate?: boolean;
 }) {
   const router = useRouter();
   const [form, setForm] = useState({
     ...initial,
     channel: (initial.channel ?? "atb") as Channel,
+    visibility: (initial.visibility ?? "joint") as "joint" | "private",
   });
   const [saving, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
@@ -81,6 +86,8 @@ export function DealForm({
       status: form.status,
       comment: form.comment.trim() || null,
       channel: form.channel,
+      // Тип задаётся только при создании — сервер игнорирует это поле при PATCH
+      ...(isEdit ? {} : { visibility: form.visibility }),
     };
 
     startTransition(async () => {
@@ -133,6 +140,63 @@ export function DealForm({
           {isEdit ? "Сделка" : "Новая сделка"}
         </h1>
       </div>
+
+      {/* Тип сделки — только для владельца */}
+      {canCreatePrivate && (
+        <div className={cn(
+          "border-2 rounded-2xl p-5 transition-colors",
+          form.visibility === "private"
+            ? "bg-amber-50 border-amber-300"
+            : "bg-white border-ink-200",
+        )}>
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <h2 className="font-display font-semibold text-ink-900 flex items-center gap-2">
+                {form.visibility === "private" ? <Lock className="size-4 text-amber-600" /> : <Users className="size-4 text-ink-400" />}
+                {form.visibility === "private" ? "Личная сделка" : "Общая сделка"}
+              </h2>
+              <p className="text-xs text-ink-500 mt-1">
+                {form.visibility === "private"
+                  ? "Прибыль 100% твоя. Егор её не увидит, уведомления не уйдут."
+                  : "Прибыль делится 50/50, видна обоим, уведомление уйдёт в группу."}
+              </p>
+            </div>
+
+            {isEdit ? (
+              <span className="text-[10px] uppercase tracking-wider text-ink-400 font-medium shrink-0 mt-1">
+                не меняется
+              </span>
+            ) : (
+              <div className="flex gap-1 bg-ink-100 rounded-xl p-1 shrink-0">
+                <button
+                  type="button"
+                  onClick={() => set("visibility", "joint")}
+                  className={cn(
+                    "text-xs font-medium px-3 py-1.5 rounded-lg transition-all",
+                    form.visibility === "joint"
+                      ? "bg-white text-ink-900 shadow-sm"
+                      : "text-ink-500 hover:text-ink-700",
+                  )}
+                >
+                  Общая
+                </button>
+                <button
+                  type="button"
+                  onClick={() => set("visibility", "private")}
+                  className={cn(
+                    "text-xs font-medium px-3 py-1.5 rounded-lg transition-all",
+                    form.visibility === "private"
+                      ? "bg-amber-500 text-white shadow-sm"
+                      : "text-ink-500 hover:text-ink-700",
+                  )}
+                >
+                  Личная
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Основные поля */}
       <div className="bg-white border border-ink-200 rounded-2xl p-5 space-y-4">

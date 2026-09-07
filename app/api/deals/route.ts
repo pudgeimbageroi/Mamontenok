@@ -1,30 +1,36 @@
 /**
- * GET  /api/deals — список сделок (optional ?status=, ?search=)
- * POST /api/deals — создать новую (snapshot курсов уже в body)
+ * GET  /api/deals — список сделок (фильтруется по режиму просмотра)
+ * POST /api/deals — создать новую
+ *
+ * Приватность: чтение только через fetchDeals — фильтр применяется всегда.
  */
 
 import { NextResponse } from "next/server";
 import { getSession } from "@/lib/auth";
 import { createSupabaseAdmin } from "@/lib/supabase/server";
-import { notifyOtherPartners, fmtRub, fmtCny, esc } from "@/lib/notifications";
+import { fetchDeals, getViewMode } from "@/lib/deals-query";
+import { isOwner } from "@/lib/visibility";
+import { notifyDealEvent, fmtRub, fmtCny, esc } from "@/lib/notifications";
 import { channelInfo } from "@/lib/channels";
 
 export async function GET(req: Request) {
   const session = await getSession();
   if (!session) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
+  const mode = await getViewMode(session);
+  let deals = await fetchDeals(session, mode);
+
+  // Доп. фильтры поверх — уже на безопасном наборе
   const url = new URL(req.url);
   const status = url.searchParams.get("status");
   const search = url.searchParams.get("search");
+  if (status) deals = deals.filter((d) => d.status === status);
+  if (search) {
+    const q = search.toLowerCase();
+    deals = deals.filter((d) => d.student_name.toLowerCase().includes(q));
+  }
 
-  const supabase = await createSupabaseAdmin();
-  let q = supabase.from("deals").select("*").order("date", { ascending: false });
-  if (status) q = q.eq("status", status);
-  if (search) q = q.ilike("student_name", `%${search}%`);
-
-  const { data, error } = await q;
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json(data);
+  return NextResponse.json(deals);
 }
 
 export async function POST(req: Request) {
@@ -35,6 +41,11 @@ export async function POST(req: Request) {
   if (!body.student_name || !body.amount_cny || !body.atb_rate || !body.my_rate) {
     return NextResponse.json({ error: "Не хватает обязательных полей" }, { status: 400 });
   }
+
+  // Личную сделку может создать только владелец сервиса.
+  // Чужой запрос с visibility=private молча становится общим.
+  const wantsPrivate = body.visibility === "private" && isOwner(session);
+  const visibility = wantsPrivate ? "private" : "joint";
 
   const supabase = await createSupabaseAdmin();
   const { data, error } = await supabase
@@ -52,6 +63,9 @@ export async function POST(req: Request) {
       status: body.status ?? "pending",
       comment: body.comment ?? null,
       channel: body.channel ?? "atb",
+      visibility,
+      // Владелец обязателен для личных, для общих пишем создателя — не мешает
+      owner_id: session.profileId,
       created_by: session.profileId,
       updated_by: session.profileId,
     })
@@ -60,10 +74,10 @@ export async function POST(req: Request) {
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
-  // 🔔 Уведомление партнёру + в общую группу
+  // 🔔 Для личной сделки notifyDealEvent не отправит ничего
   const profit = Number(data.profit_rub ?? 0);
-  const share = profit / 2;
-  notifyOtherPartners(
+  notifyDealEvent(
+    data.visibility,
     session.telegramId,
     `⚡ <b>Новая сделка</b>\n\n` +
       `👤 ${esc(data.student_name)}\n` +
@@ -72,7 +86,7 @@ export async function POST(req: Request) {
       `💴 ${fmtCny(Number(data.amount_cny))} · ${channelInfo(data.channel).shortLabel}\n` +
       `💰 Студент платит: ${fmtRub(Number(data.student_pays_rub ?? 0))}\n` +
       `📈 Прибыль: <b>${fmtRub(profit)}</b>\n` +
-      `🪨 На одного: ${fmtRub(share)}\n\n` +
+      `🪨 На одного: ${fmtRub(profit / 2)}\n\n` +
       `<i>Внёс: ${esc(session.displayName)}</i>`,
   ).catch(() => {});
 

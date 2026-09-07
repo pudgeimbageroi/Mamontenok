@@ -505,8 +505,10 @@ async function sendRatesCard(
 async function handleCash(fromId: number) {
   const supabase = await createSupabaseAdmin();
   const [dRes, cRes] = await Promise.all([
-    supabase.from("deals").select("*"),
-    supabase.from("cashflow").select("*"),
+    // Бот работает ТОЛЬКО с общими сделками — личные сюда не попадают
+    // ни при каких условиях, чтобы исключить утечку не в тот чат.
+    supabase.from("deals").select("*").eq("visibility", "joint"),
+    supabase.from("cashflow").select("*").eq("visibility", "joint"),
   ]);
   const deals = (dRes.data ?? []) as DealRow[];
   const cash = (cRes.data ?? []) as CashflowRowMini[];
@@ -547,6 +549,7 @@ async function handleDeals(fromId: number) {
   const { data } = await supabase
     .from("deals")
     .select("*")
+    .eq("visibility", "joint")
     .order("date", { ascending: false })
     .limit(10);
   const deals = (data ?? []) as DealRow[];
@@ -578,6 +581,7 @@ async function handleCard(fromId: number, text: string) {
   const { data } = await supabase
     .from("deals")
     .select("*")
+    .eq("visibility", "joint")
     .ilike("id", `${idPrefix}%`)
     .limit(1)
     .single();
@@ -632,6 +636,7 @@ async function handleEdit(fromId: number, text: string) {
   const { data: found } = await supabase
     .from("deals")
     .select("id, student_name")
+    .eq("visibility", "joint")
     .ilike("id", `${idPrefix}%`)
     .limit(1)
     .single();
@@ -694,6 +699,9 @@ async function handleNewDeal(fromId: number, text: string) {
   const { data, error } = await supabase
     .from("deals")
     .insert({
+      // Через бота создаются только общие сделки.
+      // Личные заводятся в вебе, где есть явный тумблер.
+      visibility: "joint",
       date: new Date().toISOString().slice(0, 10),
       student_name: name,
       amount_cny: amount,

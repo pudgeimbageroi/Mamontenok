@@ -61,12 +61,18 @@ export type Deal = {
   status: DealStatus;
   comment: string | null;
   channel: Channel;
+  /** joint — общая (50/50), private — личная (100% владельцу) */
+  visibility: "joint" | "private";
+  /** Чья сделка. Обязателен для личных. */
+  owner_id: string | null;
   // computed
   student_pays_rub: number;
   atb_outflow_rub: number;
   profit_rub: number;
-  my_share_rub: number;
-  egor_share_rub: number;
+  /** Доля владельца: вся прибыль для личной, половина для общей */
+  owner_share_rub: number;
+  /** Доля партнёра: 0 для личной, половина для общей */
+  partner_share_rub: number;
   created_at: string;
   updated_at: string;
 };
@@ -84,4 +90,5 @@ export type DealInput = {
   status: DealStatus;
   comment?: string | null;
   channel?: Channel;
+  visibility?: "joint" | "private";
 };
