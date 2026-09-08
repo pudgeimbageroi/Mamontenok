@@ -3,13 +3,16 @@
 import { useState, useTransition, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { ArrowLeft, Trash2, Save, AlertTriangle, Building2, Briefcase, UserRound, Lock, Users } from "lucide-react";
-import { cn, formatRub, formatCny } from "@/lib/utils";
+import {
+  ArrowLeft, Trash2, Save, TrendingUp, TrendingDown, ArrowLeftRight,
+  Building2, Briefcase, UserRound, Lock, Users, Check, Clock, Copy,
+} from "lucide-react";
+import { cn, formatRub, formatCny, plural } from "@/lib/utils";
 import { DEAL_STATUSES, type DealStatus } from "@/lib/deal-statuses";
-import type { Deal, ReferenceItem, Channel } from "@/lib/types";
+import type { ReferenceItem, Channel } from "@/lib/types";
 import { channelInfo } from "@/lib/channels";
-
-const MIN_PROFIT_WARNING = 5000;
+import { fireConfetti } from "@/lib/confetti";
+import { Panel, PanelHead } from "@/components/ui/primitives";
 
 export type DealFormInitial = {
   id?: string;
@@ -26,52 +29,173 @@ export type DealFormInitial = {
   comment: string;
   channel?: Channel;
   visibility?: "joint" | "private";
+  shage_settled?: boolean | null;
 };
+
+/** От чего отталкиваемся при вводе суммы */
+type Basis = "cny" | "rub";
+
+/** Срез прошлых сделок для подсказок и проверки на дубль */
+export type KnownDeal = {
+  name: string;
+  university: string | null;
+  city: string | null;
+  purpose: string | null;
+  channel: Channel;
+  my_rate: number;
+  date: string;
+  amount_cny: number;
+};
+
+const normName = (s: string) => s.trim().replace(/\s+/g, " ").toLowerCase();
 
 export function DealForm({
   initial,
   refs,
   isEdit = false,
   canCreatePrivate = false,
+  knownDeals = [],
 }: {
   initial: DealFormInitial;
   refs: { universities: ReferenceItem[]; cities: ReferenceItem[]; purposes: ReferenceItem[] };
   isEdit?: boolean;
-  /** Тумблер «Общая / Личная» рендерится только владельцу сервиса */
   canCreatePrivate?: boolean;
+  knownDeals?: KnownDeal[];
 }) {
   const router = useRouter();
   const [form, setForm] = useState({
     ...initial,
     channel: (initial.channel ?? "atb") as Channel,
     visibility: (initial.visibility ?? "joint") as "joint" | "private",
+    shage_settled: initial.shage_settled ?? false,
   });
   const [saving, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
 
-  // Расчёты live
-  const calcs = useMemo(() => {
-    const studentPays = form.amount_cny * form.my_rate;
-    const atbOutflow = form.amount_cny * form.atb_rate;
-    const profit = studentPays - atbOutflow;
-    return {
-      studentPays,
-      atbOutflow,
-      profit,
-      share: profit / 2,
-    };
+  /**
+   * Ввод бывает двух видов: студент называет сумму в юанях
+   * («универ просит 12 000 ¥») или сумму в рублях («у меня есть 150 000 ₽»).
+   * Храним всегда ¥ — это то, что уходит в Китай, — а рубли пересчитываем.
+   */
+  const [basis, setBasis] = useState<Basis>("cny");
+  const [rubInput, setRubInput] = useState(
+    initial.amount_cny && initial.my_rate
+      ? Math.round(initial.amount_cny * initial.my_rate)
+      : 0,
+  );
+
+  const calc = useMemo(() => {
+    const pays = form.amount_cny * form.my_rate;
+    const out = form.amount_cny * form.atb_rate;
+    const profit = pays - out;
+    return { pays, out, profit, share: profit / 2 };
   }, [form.amount_cny, form.my_rate, form.atb_rate]);
 
-  function set<K extends keyof typeof form>(key: K, value: typeof form[K]) {
-    setForm((f) => ({ ...f, [key]: value }));
+  /** Уникальные имена для подсказок в поле «Студент» */
+  const knownNames = useMemo(() => {
+    const seen = new Map<string, string>();
+    for (const d of knownDeals) {
+      const k = normName(d.name);
+      if (k && !seen.has(k)) seen.set(k, d.name.trim());
+    }
+    return Array.from(seen.values()).sort((a, b) => a.localeCompare(b, "ru"));
+  }, [knownDeals]);
+
+  /** Последняя сделка этого студента — источник подсказок */
+  const lastForStudent = useMemo(() => {
+    const k = normName(form.student_name);
+    if (!k) return null;
+    const rows = knownDeals
+      .filter((d) => normName(d.name) === k)
+      .sort((a, b) => b.date.localeCompare(a.date));
+    return rows[0] ?? null;
+  }, [knownDeals, form.student_name]);
+
+  /** Сколько раз этот студент уже платил */
+  const repeatCount = useMemo(() => {
+    const k = normName(form.student_name);
+    return k ? knownDeals.filter((d) => normName(d.name) === k).length : 0;
+  }, [knownDeals, form.student_name]);
+
+  /**
+   * Похоже на случайный повтор: тот же студент, та же сумма, тот же день.
+   * Не блокируем — бывают и настоящие две оплаты подряд, — но спрашиваем.
+   */
+  const duplicate = useMemo(() => {
+    if (isEdit) return null;
+    const k = normName(form.student_name);
+    if (!k || !form.amount_cny) return null;
+    return knownDeals.find(
+      (d) =>
+        normName(d.name) === k &&
+        d.date === form.date &&
+        Math.abs(d.amount_cny - form.amount_cny) < 0.01,
+    ) ?? null;
+  }, [isEdit, knownDeals, form.student_name, form.amount_cny, form.date]);
+
+  const [dupConfirmed, setDupConfirmed] = useState(false);
+
+  function set<K extends keyof typeof form>(k: K, v: typeof form[K]) {
+    setForm((f) => ({ ...f, [k]: v }));
+  }
+
+  /**
+   * Выбрали знакомого студента — подставляем вуз, город и назначение.
+   * Только пустые поля: если человек уже что-то ввёл, не перетираем.
+   */
+  function applyStudent(name: string) {
+    set("student_name", name);
+    if (isEdit) return;
+    const k = normName(name);
+    if (!k) return;
+    const prev = knownDeals
+      .filter((d) => normName(d.name) === k)
+      .sort((a, b) => b.date.localeCompare(a.date))[0];
+    if (!prev) return;
+
+    setForm((f) => ({
+      ...f,
+      student_name: name,
+      university: f.university.trim() || prev.university || "",
+      city: f.city.trim() || prev.city || "",
+      purpose: f.purpose.trim() || prev.purpose || "",
+    }));
+  }
+
+  /** Ввели юани — пересчитываем рубли */
+  function setCny(v: number) {
+    set("amount_cny", v);
+    setRubInput(form.my_rate > 0 ? Math.round(v * form.my_rate) : 0);
+  }
+
+  /** Ввели рубли — пересчитываем юани */
+  function setRub(v: number) {
+    setRubInput(v);
+    if (form.my_rate > 0) {
+      set("amount_cny", Number((v / form.my_rate).toFixed(2)));
+    }
+  }
+
+  /** Сменился курс — пересчитываем то поле, которое не редактируем */
+  function setMyRate(v: number) {
+    setForm((f) => {
+      const next = { ...f, my_rate: v };
+      if (basis === "rub" && v > 0) {
+        next.amount_cny = Number((rubInput / v).toFixed(2));
+      }
+      return next;
+    });
+    if (basis === "cny" && v > 0) {
+      setRubInput(Math.round(form.amount_cny * v));
+    }
   }
 
   async function handleSave() {
     setError(null);
     if (!form.student_name.trim()) { setError("Введи имя студента"); return; }
-    if (!form.amount_cny || form.amount_cny <= 0) { setError("Сумма ¥ должна быть > 0"); return; }
-    if (!form.atb_rate || form.atb_rate <= 0) { setError("Курс АТБ должен быть > 0"); return; }
-    if (!form.my_rate || form.my_rate <= 0) { setError("Мой курс должен быть > 0"); return; }
+    if (!form.amount_cny || form.amount_cny <= 0) { setError("Сумма должна быть больше нуля"); return; }
+    if (!form.atb_rate || form.atb_rate <= 0) { setError("Курс закупки должен быть больше нуля"); return; }
+    if (!form.my_rate || form.my_rate <= 0) { setError("Мой курс должен быть больше нуля"); return; }
 
     const payload = {
       date: form.date,
@@ -86,379 +210,386 @@ export function DealForm({
       status: form.status,
       comment: form.comment.trim() || null,
       channel: form.channel,
-      // Тип задаётся только при создании — сервер игнорирует это поле при PATCH
+      ...(form.channel === "shage" ? { shage_settled: form.shage_settled } : {}),
       ...(isEdit ? {} : { visibility: form.visibility }),
     };
 
     startTransition(async () => {
       try {
-        const url = isEdit ? `/api/deals/${initial.id}` : "/api/deals";
-        const method = isEdit ? "PATCH" : "POST";
-        const res = await fetch(url, {
-          method,
+        const res = await fetch(isEdit ? `/api/deals/${initial.id}` : "/api/deals", {
+          method: isEdit ? "PATCH" : "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
         });
         if (!res.ok) {
-          const data = await res.json();
-          setError(data.error ?? "Не удалось сохранить");
+          const d = await res.json();
+          setError(d.error ?? "Не удалось сохранить");
           return;
         }
+        // Новая сделка — небольшой праздник
+        if (!isEdit) fireConfetti();
         router.push("/app/deals");
         router.refresh();
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Unknown error");
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "Ошибка сети");
       }
     });
   }
 
   async function handleDelete() {
     if (!isEdit || !initial.id) return;
-    if (!confirm("Удалить сделку? Это действие нельзя отменить.")) return;
+    if (!confirm("Удалить сделку? Отменить будет нельзя.")) return;
     startTransition(async () => {
       const res = await fetch(`/api/deals/${initial.id}`, { method: "DELETE" });
-      if (res.ok) {
-        router.push("/app/deals");
-        router.refresh();
-      } else {
-        const data = await res.json();
-        setError(data.error ?? "Не удалось удалить");
-      }
+      if (res.ok) { router.push("/app/deals"); router.refresh(); }
+      else { const d = await res.json(); setError(d.error ?? "Не удалось удалить"); }
     });
   }
 
-  return (
-    <div className="space-y-6 max-w-3xl mx-auto">
-      <div>
-        <Link
-          href="/app/deals"
-          className="inline-flex items-center gap-2 text-sm text-ink-500 hover:text-ink-700 mb-3"
-        >
-          <ArrowLeft className="size-4" /> К списку сделок
-        </Link>
-        <h1 className="text-3xl lg:text-4xl font-display font-bold tracking-tight text-ink-900">
-          {isEdit ? "Сделка" : "Новая сделка"}
-        </h1>
-      </div>
+  const chLabel = channelInfo(form.channel).shortLabel;
 
-      {/* Тип сделки — только для владельца */}
-      {canCreatePrivate && (
-        <div className={cn(
-          "border-2 rounded-2xl p-5 transition-colors",
-          form.visibility === "private"
-            ? "bg-amber-50 border-amber-300"
-            : "bg-white border-ink-200",
-        )}>
-          <div className="flex items-start justify-between gap-4">
-            <div className="min-w-0">
-              <h2 className="font-display font-semibold text-ink-900 flex items-center gap-2">
-                {form.visibility === "private" ? <Lock className="size-4 text-amber-600" /> : <Users className="size-4 text-ink-400" />}
-                {form.visibility === "private" ? "Личная сделка" : "Общая сделка"}
-              </h2>
-              <p className="text-xs text-ink-500 mt-1">
+  return (
+    <div className="max-w-4xl mx-auto">
+      <Link href="/app/deals"
+        className="inline-flex items-center gap-1.5 text-xs text-ink-500 hover:text-ink-900 mb-3 transition-colors">
+        <ArrowLeft className="size-3.5" /> К списку сделок
+      </Link>
+      <h1 className="text-xl lg:text-2xl font-display font-semibold tracking-tight text-ink-900 mb-5">
+        {isEdit ? "Сделка" : "Новая сделка"}
+      </h1>
+
+      <div className="grid grid-cols-1 lg:grid-cols-[1fr_300px] gap-4 items-start">
+        <div className="space-y-4">
+          {canCreatePrivate && (
+            <div className={cn("flex items-center justify-between gap-4 px-4 py-3 rounded-xl border transition-colors",
+              form.visibility === "private" ? "bg-warning-bg border-warning/30" : "bg-surface border-line")}>
+              <div className="flex items-center gap-2.5 min-w-0">
                 {form.visibility === "private"
-                  ? "Прибыль 100% твоя. Егор её не увидит, уведомления не уйдут."
-                  : "Прибыль делится 50/50, видна обоим, уведомление уйдёт в группу."}
-              </p>
+                  ? <Lock className="size-4 text-warning shrink-0" />
+                  : <Users className="size-4 text-ink-400 shrink-0" />}
+                <div className="min-w-0">
+                  <div className="text-xs font-medium text-ink-900">
+                    {form.visibility === "private" ? "Личная сделка" : "Общая сделка"}
+                  </div>
+                  <div className="text-2xs text-ink-500">
+                    {form.visibility === "private"
+                      ? "Прибыль 100% твоя, Егор не увидит"
+                      : "Прибыль пополам, уведомление уйдёт в группу"}
+                  </div>
+                </div>
+              </div>
+              {isEdit ? (
+                <span className="label-micro shrink-0">не меняется</span>
+              ) : (
+                <div className="flex gap-0.5 p-0.5 rounded-md bg-ink-100 shrink-0">
+                  <button type="button" onClick={() => set("visibility", "joint")}
+                    className={cn("text-2xs font-medium px-2.5 py-1 rounded transition-colors",
+                      form.visibility === "joint" ? "bg-surface text-ink-900 shadow-sm" : "text-ink-400")}>
+                    Общая
+                  </button>
+                  <button type="button" onClick={() => set("visibility", "private")}
+                    className={cn("text-2xs font-medium px-2.5 py-1 rounded transition-colors",
+                      form.visibility === "private" ? "bg-warning text-white shadow-sm" : "text-ink-400")}>
+                    Личная
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ─── Канал ─── */}
+          <Panel>
+            <PanelHead title="Канал закупки" />
+            <div className="grid grid-cols-3 divide-x divide-line">
+              {([
+                ["atb", "АТБ · физлицо", "через приложение", Building2],
+                ["atb_ip", "АТБ · ИП", "бизнес-приложение", Briefcase],
+                ["shage", "沙哥", "посредник", UserRound],
+              ] as const).map(([v, t, s, Icon]) => (
+                <button key={v} type="button" onClick={() => set("channel", v)}
+                  className={cn("relative px-3 py-3 text-left transition-colors",
+                    form.channel === v ? "bg-brand-50" : "hover:bg-ink-100/60")}>
+                  {form.channel === v && <span className="absolute inset-x-0 top-0 h-0.5 bg-brand-500" />}
+                  <Icon className={cn("size-4 mb-1.5",
+                    form.channel === v ? "text-brand-700" : "text-ink-400")} />
+                  <span className={cn("text-xs font-medium truncate",
+                    form.channel === v ? "text-brand-800" : "text-ink-700")}>{t}</span>
+                  <span className="text-2xs text-ink-400 truncate">{s}</span>
+                </button>
+              ))}
             </div>
 
-            {isEdit ? (
-              <span className="text-[10px] uppercase tracking-wider text-ink-400 font-medium shrink-0 mt-1">
-                не меняется
+            {/* Расчёт с посредником — сразу при создании */}
+            {form.channel === "shage" && (
+              <div className="flex items-center justify-between gap-3 px-4 py-3 border-t border-line bg-surface-sunken">
+                <div className="flex items-center gap-2 min-w-0">
+                  {form.shage_settled
+                    ? <Check className="size-4 text-success shrink-0" />
+                    : <Clock className="size-4 text-warning shrink-0" />}
+                  <div className="min-w-0">
+                    <div className="text-xs font-medium text-ink-900">
+                      {form.shage_settled ? "Долю уже получили" : "Доля пока у 沙哥"}
+                    </div>
+                    <div className="text-2xs text-ink-500">
+                      Можно переключить потом прямо из списка
+                    </div>
+                  </div>
+                </div>
+                <div className="flex gap-0.5 p-0.5 rounded-md bg-ink-100 shrink-0">
+                  <button type="button" onClick={() => set("shage_settled", false)}
+                    className={cn("text-2xs font-medium px-2.5 py-1 rounded transition-colors",
+                      !form.shage_settled ? "bg-warning text-white shadow-sm" : "text-ink-400")}>
+                    У него
+                  </button>
+                  <button type="button" onClick={() => set("shage_settled", true)}
+                    className={cn("text-2xs font-medium px-2.5 py-1 rounded transition-colors",
+                      form.shage_settled ? "bg-success text-white shadow-sm" : "text-ink-400")}>
+                    Получено
+                  </button>
+                </div>
+              </div>
+            )}
+          </Panel>
+
+          {/* ─── Похоже на дубль ─── */}
+          {duplicate && !dupConfirmed && (
+            <div className="flex items-start gap-2.5 px-4 py-3 rounded-xl border border-warning
+                            bg-warning-bg">
+              <Copy className="size-4 text-warning shrink-0 mt-0.5" />
+              <div className="flex-1 min-w-0 text-xs">
+                <p className="font-medium text-warning">Похоже на повтор</p>
+                <p className="text-ink-600 mt-0.5">
+                  {duplicate.name} уже есть за {duplicate.date} на{" "}
+                  {formatCny(duplicate.amount_cny)}. Если это вторая настоящая оплата —
+                  всё в порядке, продолжай.
+                </p>
+              </div>
+              <button type="button" onClick={() => setDupConfirmed(true)}
+                className="text-2xs font-medium text-warning hover:underline shrink-0 mt-0.5">
+                Всё верно
+              </button>
+            </div>
+          )}
+
+          {/* ─── Студент ─── */}
+          <Panel>
+            <PanelHead title="Студент"
+              right={lastForStudent && !isEdit ? (
+                <span className="text-2xs text-ink-400">
+                  прошлый раз {lastForStudent.my_rate.toFixed(2)} ₽/¥
+                </span>
+              ) : undefined} />
+            <div className="p-4 space-y-3.5">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <Field label="Дата сделки" required>
+                  <input type="date" value={form.date}
+                    onChange={(e) => set("date", e.target.value)} className="field" />
+                </Field>
+                <Field label="Имя студента" required
+                  hint={repeatCount > 0
+                    ? `${repeatCount} ${plural(repeatCount, "сделка", "сделки", "сделок")} раньше`
+                    : undefined}>
+                  <input type="text" value={form.student_name} placeholder="Иван Иванов"
+                    list="known-students"
+                    onChange={(e) => applyStudent(e.target.value)} className="field" />
+                  <datalist id="known-students">
+                    {knownNames.map((n) => <option key={n} value={n} />)}
+                  </datalist>
+                </Field>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <Field label="Университет">
+                  <Combo value={form.university} onChange={(v) => set("university", v)}
+                    options={refs.universities.map((r) => r.value)} listId="u" placeholder="Донхуа" />
+                </Field>
+                <Field label="Город">
+                  <Combo value={form.city} onChange={(v) => set("city", v)}
+                    options={refs.cities.map((r) => r.value)} listId="c" placeholder="Шанхай" />
+                </Field>
+                <Field label="Назначение">
+                  <Combo value={form.purpose} onChange={(v) => set("purpose", v)}
+                    options={refs.purposes.map((r) => r.value)} listId="p" placeholder="学费" />
+                </Field>
+              </div>
+            </div>
+          </Panel>
+
+          {/* ─── Сумма: от юаней или от рублей ─── */}
+          <Panel>
+            <div className="panel-head">
+              <span className="label-micro">Сумма сделки</span>
+              <div className="flex gap-0.5 p-0.5 rounded-md bg-ink-100">
+                <button type="button" onClick={() => setBasis("cny")}
+                  className={cn("text-2xs font-medium px-2.5 py-1 rounded transition-colors inline-flex items-center gap-1",
+                    basis === "cny" ? "bg-surface text-ink-900 shadow-sm" : "text-ink-400")}>
+                  От юаней
+                </button>
+                <button type="button" onClick={() => setBasis("rub")}
+                  className={cn("text-2xs font-medium px-2.5 py-1 rounded transition-colors inline-flex items-center gap-1",
+                    basis === "rub" ? "bg-surface text-ink-900 shadow-sm" : "text-ink-400")}>
+                  От рублей
+                </button>
+              </div>
+            </div>
+
+            <div className="p-4 space-y-3.5">
+              <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto_1fr] gap-3 items-end">
+                <Field label={basis === "cny" ? "Сколько запросили" : "Получится юаней"} required={basis === "cny"}>
+                  <div className="flex items-baseline gap-2">
+                    <input type="number" step="0.01" value={form.amount_cny || ""}
+                      onChange={(e) => setCny(parseFloat(e.target.value) || 0)}
+                      readOnly={basis === "rub"}
+                      className={cn("field num font-display font-bold text-xl",
+                        basis === "rub" && "bg-ink-100 text-ink-700 cursor-default")} />
+                    <span className="font-display font-semibold text-lg text-ink-400">¥</span>
+                  </div>
+                </Field>
+
+                <div className="hidden sm:flex items-center justify-center pb-3 text-ink-300">
+                  <ArrowLeftRight className="size-4" />
+                </div>
+
+                <Field label={basis === "rub" ? "Бюджет студента" : "Студент заплатит"} required={basis === "rub"}>
+                  <div className="flex items-baseline gap-2">
+                    <input type="number" step="1" value={rubInput || ""}
+                      onChange={(e) => setRub(parseFloat(e.target.value) || 0)}
+                      readOnly={basis === "cny"}
+                      className={cn("field num font-display font-bold text-xl",
+                        basis === "cny" && "bg-ink-100 text-ink-700 cursor-default")} />
+                    <span className="font-display font-semibold text-lg text-ink-400">₽</span>
+                  </div>
+                </Field>
+              </div>
+
+              <p className="text-2xs text-ink-400">
+                {basis === "cny"
+                  ? "Вводишь юани — рубли считаются по твоему курсу"
+                  : "Вводишь рубли — юани считаются по твоему курсу"}
+              </p>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1 border-t border-line">
+                <Field label="Курс ЦБ" hint="справочно">
+                  <input type="number" step="0.0001" value={form.cbr_rate || ""}
+                    onChange={(e) => set("cbr_rate", parseFloat(e.target.value) || 0)}
+                    className="field num" />
+                </Field>
+                <Field label={`Курс ${chLabel}`} required
+                  hint={form.channel === "shage" ? "который он назвал" : "по которому списали"}>
+                  <input type="number" step="0.0001" value={form.atb_rate || ""}
+                    onChange={(e) => set("atb_rate", parseFloat(e.target.value) || 0)}
+                    className="field num" />
+                </Field>
+                <Field label="Мой курс" required hint="который дал студенту">
+                  <input type="number" step="0.0001" value={form.my_rate || ""}
+                    onChange={(e) => setMyRate(parseFloat(e.target.value) || 0)}
+                    className="field num" />
+                </Field>
+              </div>
+            </div>
+          </Panel>
+
+          {/* ─── Статус ─── */}
+          <Panel>
+            <PanelHead title="Статус и комментарий" />
+            <div className="p-4 space-y-3.5">
+              <div>
+                <span className="label-micro">Статус</span>
+                <div className="flex flex-wrap gap-1.5 mt-1.5">
+                  {DEAL_STATUSES.map((s) => (
+                    <button key={s.value} type="button" onClick={() => set("status", s.value)}
+                      className={form.status === s.value ? "chip-on" : "chip"}>
+                      <span className={cn("size-1.5 rounded-full inline-block mr-1.5 -mt-px",
+                        form.status === s.value ? "bg-white" : s.dot)} />
+                      {s.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <Field label="Комментарий">
+                <textarea value={form.comment} rows={2}
+                  onChange={(e) => set("comment", e.target.value)}
+                  placeholder="QR прислан в WeChat"
+                  className="field resize-y" />
+              </Field>
+            </div>
+          </Panel>
+        </div>
+
+        {/* ─── Расчёт ─── */}
+        <div className="lg:sticky lg:top-6 space-y-3">
+          <div className="rounded-xl bg-brand-solid text-white overflow-hidden">
+            <div className="px-4 py-2.5 border-b border-white/15 flex items-center justify-between">
+              <span className="text-2xs font-medium uppercase tracking-micro text-white/70">
+                Расчёт сделки
               </span>
-            ) : (
-              <div className="flex gap-1 bg-ink-100 rounded-xl p-1 shrink-0">
-                <button
-                  type="button"
-                  onClick={() => set("visibility", "joint")}
-                  className={cn(
-                    "text-xs font-medium px-3 py-1.5 rounded-lg transition-all",
-                    form.visibility === "joint"
-                      ? "bg-white text-ink-900 shadow-sm"
-                      : "text-ink-500 hover:text-ink-700",
-                  )}
-                >
-                  Общая
-                </button>
-                <button
-                  type="button"
-                  onClick={() => set("visibility", "private")}
-                  className={cn(
-                    "text-xs font-medium px-3 py-1.5 rounded-lg transition-all",
-                    form.visibility === "private"
-                      ? "bg-amber-500 text-white shadow-sm"
-                      : "text-ink-500 hover:text-ink-700",
-                  )}
-                >
-                  Личная
-                </button>
+              <span className="text-2xs bg-white/15 px-1.5 py-0.5 rounded">{chLabel}</span>
+            </div>
+            <div className="px-4 py-3.5 space-y-2.5">
+              <Kpi label="Студент платит" value={formatRub(calc.pays)} />
+              <Kpi label={`Уйдёт с ${chLabel}`} value={formatRub(calc.out)} dim />
+              <div className="pt-2.5 border-t border-white/15">
+                <div className="text-2xs text-white/70">Прибыль</div>
+                <div className="flex items-center gap-1.5 mt-0.5">
+                  {calc.profit >= 0 ? <TrendingUp className="size-4" /> : <TrendingDown className="size-4" />}
+                  <span className="num font-display font-bold text-2xl">{formatRub(calc.profit)}</span>
+                </div>
+                {form.atb_rate > 0 && (
+                  <div className="text-2xs text-white/60 num mt-0.5">
+                    ≈ {formatCny(calc.profit / form.atb_rate)}
+                  </div>
+                )}
+              </div>
+              <div className="pt-2.5 border-t border-white/15">
+                <div className="text-2xs text-white/70">
+                  {form.visibility === "private" ? "Вся прибыль твоя" : "На одного неандертальца"}
+                </div>
+                <div className="num font-display font-bold text-lg mt-0.5">
+                  {formatRub(form.visibility === "private" ? calc.profit : calc.share)}
+                </div>
+              </div>
+            </div>
+            {form.channel === "shage" && !form.shage_settled && calc.profit > 0 && (
+              <div className="px-4 py-2.5 bg-white/15 flex items-center gap-2 text-2xs">
+                <Clock className="size-3.5 shrink-0" />
+                Долю получим позже — останется в долге за 沙哥
               </div>
             )}
           </div>
-        </div>
-      )}
 
-      {/* Основные поля */}
-      <div className="bg-white border border-ink-200 rounded-2xl p-5 space-y-4">
-        <h2 className="font-display font-semibold text-ink-900">Информация о студенте</h2>
+          {error && (
+            <div className="bg-danger-bg border border-danger/25 text-danger text-xs px-3 py-2.5 rounded-lg">
+              {error}
+            </div>
+          )}
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          <Field label="Дата сделки" required>
-            <input
-              type="date" value={form.date} onChange={(e) => set("date", e.target.value)}
-              className={inputCls}
-            />
-          </Field>
-          <Field label="Имя студента" required>
-            <input
-              type="text" value={form.student_name} onChange={(e) => set("student_name", e.target.value)}
-              placeholder="Иван Иванов"
-              className={inputCls}
-            />
-          </Field>
-        </div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-          <Field label="Университет">
-            <ComboboxInput
-              value={form.university}
-              onChange={(v) => set("university", v)}
-              options={refs.universities.map((r) => r.value)}
-              listId="universities"
-              placeholder="Донхуа"
-            />
-          </Field>
-          <Field label="Город">
-            <ComboboxInput
-              value={form.city}
-              onChange={(v) => set("city", v)}
-              options={refs.cities.map((r) => r.value)}
-              listId="cities"
-              placeholder="Шанхай"
-            />
-          </Field>
-          <Field label="Назначение">
-            <ComboboxInput
-              value={form.purpose}
-              onChange={(v) => set("purpose", v)}
-              options={refs.purposes.map((r) => r.value)}
-              listId="purposes"
-              placeholder="学费"
-            />
-          </Field>
-        </div>
-      </div>
-
-      {/* Канал закупки */}
-      <div className="bg-white border border-ink-200 rounded-2xl p-5 space-y-4">
-        <h2 className="font-display font-semibold text-ink-900">Канал закупки юаней</h2>
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-          <ChannelButton
-            active={form.channel === "atb"}
-            onClick={() => set("channel", "atb")}
-            icon={<Building2 className="size-5" />}
-            title="АТБ Bank"
-            sublabel="через приложение"
-          />
-          <ChannelButton
-            active={form.channel === "atb_ip"}
-            onClick={() => set("channel", "atb_ip")}
-            icon={<Briefcase className="size-5" />}
-            title="АТБ · ИП"
-            sublabel="бизнес-приложение"
-          />
-          <ChannelButton
-            active={form.channel === "shage"}
-            onClick={() => set("channel", "shage")}
-            icon={<UserRound className="size-5" />}
-            title="沙哥"
-            sublabel="посредник"
-          />
-        </div>
-      </div>
-
-      {/* Курсы и сумма */}
-      <div className="bg-white border border-ink-200 rounded-2xl p-5 space-y-4">
-        <h2 className="font-display font-semibold text-ink-900">Сумма и курсы (зафиксированы на момент сделки)</h2>
-
-        <Field label="Сумма ¥" required>
-          <div className="flex items-baseline gap-2">
-            <input
-              type="number" step="0.01" value={form.amount_cny || ""}
-              onChange={(e) => set("amount_cny", parseFloat(e.target.value) || 0)}
-              className={cn(inputCls, "text-2xl font-display font-bold")}
-            />
-            <span className="font-display font-bold text-xl text-ink-400">¥</span>
-          </div>
-        </Field>
-
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-          <Field label="Курс ЦБ (фикс)" hint="на дату сделки">
-            <input
-              type="number" step="0.0001" value={form.cbr_rate || ""}
-              onChange={(e) => set("cbr_rate", parseFloat(e.target.value) || 0)}
-              className={inputCls}
-            />
-          </Field>
-          <Field
-            label={`Курс ${channelInfo(form.channel).shortLabel}`}
-            hint={form.channel === "shage" ? "который он назвал" : "по которому списали"} required
-          >
-            <input
-              type="number" step="0.0001" value={form.atb_rate || ""}
-              onChange={(e) => set("atb_rate", parseFloat(e.target.value) || 0)}
-              className={inputCls}
-            />
-          </Field>
-          <Field label="Мой курс" hint="который дал студенту" required>
-            <input
-              type="number" step="0.0001" value={form.my_rate || ""}
-              onChange={(e) => set("my_rate", parseFloat(e.target.value) || 0)}
-              className={inputCls}
-            />
-          </Field>
-        </div>
-      </div>
-
-      {/* Превью расчёта */}
-      <div className={cn(
-        "bg-gradient-to-br rounded-2xl p-5 text-white shadow-xl",
-        calcs.profit >= MIN_PROFIT_WARNING ? "from-success to-emerald-700" :
-        calcs.profit < 0 ? "from-danger to-red-700" :
-        calcs.profit > 0 ? "from-amber-500 to-amber-700" :
-        "from-ink-500 to-ink-700"
-      )}>
-        <p className="text-xs uppercase tracking-wider opacity-80 font-medium mb-3">Расчёт сделки</p>
-        <div className="grid grid-cols-2 gap-3">
-          <KpiItem label="Студент платит" value={formatRub(calcs.studentPays)} />
-          <KpiItem
-            label={`Уйдёт с ${channelInfo(form.channel).shortLabel}`}
-            value={formatRub(calcs.atbOutflow)}
-          />
-          <KpiItem
-            label="Прибыль"
-            value={formatRub(calcs.profit)}
-            subvalue={form.atb_rate > 0 ? `≈ ${formatCny(calcs.profit / form.atb_rate)}` : undefined}
-            accent
-          />
-          <KpiItem
-            label="🪨 На одного неандертальца"
-            value={formatRub(calcs.share)}
-            subvalue={form.atb_rate > 0 ? `≈ ${formatCny(calcs.share / form.atb_rate)}` : undefined}
-            accent
-          />
-        </div>
-        {calcs.profit > 0 && calcs.profit < MIN_PROFIT_WARNING && (
-          <div className="flex items-center gap-2 mt-4 text-xs font-medium">
-            <AlertTriangle className="size-4" /> 注意: прибыль меньше 5 000 ₽
-          </div>
-        )}
-      </div>
-
-      {/* Статус и комментарий */}
-      <div className="bg-white border border-ink-200 rounded-2xl p-5 space-y-4">
-        <Field label="Статус">
-          <div className="flex flex-wrap gap-2">
-            {DEAL_STATUSES.map((s) => (
-              <button
-                key={s.value}
-                type="button"
-                onClick={() => set("status", s.value)}
-                className={cn(
-                  "text-xs font-medium px-3 py-2 rounded-lg transition-colors border",
-                  form.status === s.value
-                    ? "bg-brand-500 text-white border-brand-500"
-                    : "bg-white border-ink-200 text-ink-700 hover:border-ink-300",
-                )}
-              >
-                {s.label}
+          <div className="flex gap-2">
+            {isEdit ? (
+              <button onClick={handleDelete} disabled={saving}
+                className="btn border border-danger/30 text-danger hover:bg-danger-bg text-xs">
+                <Trash2 className="size-3.5" />
               </button>
-            ))}
+            ) : (
+              <Link href="/app/deals" className="btn-ghost text-xs">Отмена</Link>
+            )}
+            <button onClick={handleSave} disabled={saving} className="btn-primary flex-1 text-xs">
+              <Save className="size-3.5" />
+              {saving ? "Сохраняю" : isEdit ? "Сохранить" : "Создать сделку"}
+            </button>
           </div>
-        </Field>
-
-        <Field label="Комментарий">
-          <textarea
-            value={form.comment} onChange={(e) => set("comment", e.target.value)}
-            placeholder="QR прислан в WeChat, ждём оплату…"
-            rows={2}
-            className={cn(inputCls, "resize-y")}
-          />
-        </Field>
-      </div>
-
-      {/* Error */}
-      {error && (
-        <div className="bg-danger-bg border border-danger/30 text-danger text-sm px-4 py-3 rounded-xl">
-          {error}
         </div>
-      )}
-
-      {/* Actions */}
-      <div className="flex gap-3 justify-between sticky bottom-4 lg:bottom-0">
-        {isEdit ? (
-          <button
-            onClick={handleDelete}
-            disabled={saving}
-            className="inline-flex items-center gap-2 bg-white border border-danger/30 hover:bg-danger-bg text-danger font-medium text-sm px-4 py-2.5 rounded-xl disabled:opacity-50 transition-colors"
-          >
-            <Trash2 className="size-4" /> Удалить
-          </button>
-        ) : (
-          <Link
-            href="/app/deals"
-            className="inline-flex items-center gap-2 bg-white border border-ink-200 hover:border-ink-300 text-ink-700 font-medium text-sm px-4 py-2.5 rounded-xl transition-colors"
-          >
-            Отмена
-          </Link>
-        )}
-        <button
-          onClick={handleSave}
-          disabled={saving}
-          className="inline-flex items-center gap-2 bg-brand-500 hover:bg-brand-600 text-white font-display font-semibold text-sm px-5 py-2.5 rounded-xl shadow-sm disabled:opacity-50 transition-colors"
-        >
-          <Save className="size-4" />
-          {saving ? "Сохраняю…" : isEdit ? "Сохранить" : "Создать сделку"}
-        </button>
       </div>
     </div>
   );
 }
 
-const inputCls =
-  "w-full bg-white border border-ink-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-brand-500 focus:ring-4 focus:ring-brand-100 transition-all tabular-nums";
-
-function ChannelButton({
-  active, onClick, icon, title, sublabel,
-}: {
-  active: boolean;
-  onClick: () => void;
-  icon: React.ReactNode;
-  title: string;
-  sublabel: string;
-}) {
+function Kpi({ label, value, dim }: { label: string; value: string; dim?: boolean }) {
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        "flex items-center gap-3 border-2 rounded-xl px-4 py-3 text-left transition-all",
-        active
-          ? "border-brand-500 bg-brand-50 ring-4 ring-brand-100"
-          : "border-ink-200 hover:border-ink-300 bg-white",
-      )}
-    >
-      <div className={cn(
-        "size-9 rounded-lg flex items-center justify-center shrink-0",
-        active ? "bg-brand-500 text-white" : "bg-ink-100 text-ink-500",
-      )}>
-        {icon}
-      </div>
-      <div className="min-w-0">
-        <p className="text-sm font-display font-bold text-ink-900 truncate">{title}</p>
-        <p className="text-xs text-ink-500 truncate">{sublabel}</p>
-      </div>
-    </button>
+    <div className="flex items-baseline justify-between gap-3">
+      <span className={cn("text-2xs", dim ? "text-white/60" : "text-white/80")}>{label}</span>
+      <span className={cn("num font-display font-semibold text-sm", dim && "text-white/80")}>
+        {value}
+      </span>
+    </div>
   );
 }
 
@@ -469,60 +600,30 @@ function Field({
 }) {
   return (
     <div>
-      <label className="flex items-center justify-between mb-1.5">
-        <span className="text-xs uppercase tracking-wider text-ink-500 font-medium">
+      <div className="flex items-baseline justify-between mb-1.5 gap-2">
+        <span className="label-micro">
           {label} {required && <span className="text-danger">*</span>}
         </span>
-        {hint && <span className="text-xs text-ink-500 normal-case">{hint}</span>}
-      </label>
+        {hint && <span className="text-2xs text-ink-400 normal-case">{hint}</span>}
+      </div>
       {children}
     </div>
   );
 }
 
-function ComboboxInput({
+function Combo({
   value, onChange, options, listId, placeholder,
 }: {
-  value: string;
-  onChange: (v: string) => void;
-  options: string[];
-  listId: string;
-  placeholder: string;
+  value: string; onChange: (v: string) => void;
+  options: string[]; listId: string; placeholder: string;
 }) {
   return (
     <>
-      <input
-        type="text"
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder={placeholder}
-        list={listId}
-        className={inputCls}
-      />
+      <input type="text" value={value} list={listId} placeholder={placeholder}
+        onChange={(e) => onChange(e.target.value)} className="field" />
       <datalist id={listId}>
         {options.map((o) => <option key={o} value={o} />)}
       </datalist>
     </>
-  );
-}
-
-function KpiItem({
-  label, value, subvalue, accent,
-}: {
-  label: string; value: string; subvalue?: string; accent?: boolean;
-}) {
-  return (
-    <div>
-      <p className="text-xs uppercase tracking-wider opacity-80 font-medium">{label}</p>
-      <p className={cn(
-        "font-display tabular-nums mt-0.5",
-        accent ? "font-bold text-2xl" : "font-semibold text-lg",
-      )}>
-        {value}
-      </p>
-      {subvalue && (
-        <p className="text-xs opacity-75 tabular-nums">{subvalue}</p>
-      )}
-    </div>
   );
 }

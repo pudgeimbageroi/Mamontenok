@@ -2,74 +2,84 @@
 
 import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
+import { Users, Lock, ChevronsUpDown, BarChart3 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { VIEW_MODES, VIEW_MODE_COOKIE, type ViewMode } from "@/lib/visibility";
 
+const ICONS: Record<ViewMode, typeof Users> = {
+  joint: Users,
+  private: Lock,
+  all_mine: BarChart3,
+};
+
+const ORDER: ViewMode[] = ["joint", "private", "all_mine"];
+
 /**
- * Переключатель режима просмотра. Рендерится только владельцу —
- * второй партнёр его не видит и не знает о его существовании.
+ * Плашка режима в боковом меню. Клик — следующий режим по кругу.
+ * Рендерится только владельцу; партнёр её не видит вовсе.
  *
- * Режим хранится в session-куке: закрыл браузер — вернулся в «Общий».
- * Это осознанно: не хочется случайно открыть приложение при партнёре
- * и обнаружить, что там всё ещё висит личный режим.
+ * Цвет берётся из акцентной палитры (brand-*), которая переопределяется
+ * через data-mode на корне — плашка всегда совпадает с текущей темой.
  */
-export function ViewModeSwitcher({ current }: { current: ViewMode }) {
+export function ViewModePlate({
+  current,
+  compact = false,
+}: {
+  current: ViewMode;
+  compact?: boolean;
+}) {
   const router = useRouter();
   const [mode, setMode] = useState<ViewMode>(current);
-  const [, startTransition] = useTransition();
+  const [pending, startTransition] = useTransition();
 
-  function switchTo(next: ViewMode) {
-    if (next === mode) return;
+  const info = VIEW_MODES.find((m) => m.value === mode) ?? VIEW_MODES[0];
+  const Icon = ICONS[mode];
+
+  function cycle() {
+    const next = ORDER[(ORDER.indexOf(mode) + 1) % ORDER.length];
     setMode(next);
-    // Session cookie — без max-age, живёт до закрытия браузера
+    // Session-кука: закрыл браузер — вернулся в «Общий»
     document.cookie = `${VIEW_MODE_COOKIE}=${next}; path=/; SameSite=Lax`;
     startTransition(() => router.refresh());
   }
 
-  return (
-    <div className="inline-flex items-center gap-1 bg-ink-100 rounded-xl p-1">
-      {VIEW_MODES.map((m) => (
-        <button
-          key={m.value}
-          onClick={() => switchTo(m.value)}
-          title={m.hint}
-          className={cn(
-            "inline-flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg transition-all",
-            mode === m.value
-              ? m.value === "joint"
-                ? "bg-white text-ink-900 shadow-sm"
-                : "bg-amber-500 text-white shadow-sm"
-              : "text-ink-500 hover:text-ink-700",
-          )}
-        >
-          <span>{m.emoji}</span>
-          <span className="hidden sm:inline">{m.label}</span>
-        </button>
-      ))}
-    </div>
-  );
-}
+  if (compact) {
+    return (
+      <button
+        onClick={cycle}
+        aria-label={`Режим: ${info.label}. Нажми чтобы сменить`}
+        className={cn(
+          "inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium",
+          "bg-brand-50 text-brand-800 border border-brand-200 transition-opacity",
+          pending && "opacity-60",
+        )}
+      >
+        <Icon className="size-3.5" />
+        {info.label}
+      </button>
+    );
+  }
 
-/**
- * Рамка-индикатор вокруг контента, когда открыт не общий режим.
- * Нужна чтобы взгляд сразу цеплялся: сейчас на экране личные данные.
- */
-export function PrivateModeFrame({
-  mode,
-  children,
-}: {
-  mode: ViewMode;
-  children: React.ReactNode;
-}) {
-  if (mode === "joint") return <>{children}</>;
-
-  const label = mode === "private" ? "Личный режим" : "Всё моё";
   return (
-    <div className="relative rounded-3xl ring-2 ring-amber-400/70 ring-offset-4 ring-offset-canvas">
-      <div className="absolute -top-3 left-4 z-10 bg-amber-500 text-white text-[10px] font-bold uppercase tracking-wider px-2.5 py-1 rounded-full shadow-sm">
-        {label}
-      </div>
-      {children}
-    </div>
+    <button
+      onClick={cycle}
+      aria-label={`Режим: ${info.label}. Нажми чтобы сменить`}
+      className={cn(
+        "w-full text-left rounded-lg px-3 py-2.5 border transition-all",
+        "bg-brand-50 border-brand-200 hover:border-brand-300",
+        pending && "opacity-60",
+      )}
+    >
+      <span className="flex items-center justify-between gap-2">
+        <span className="flex items-center gap-2 min-w-0">
+          <Icon className="size-4 text-brand-700 shrink-0" />
+          <span className="text-sm font-display font-semibold text-brand-800 truncate">
+            {info.label}
+          </span>
+        </span>
+        <ChevronsUpDown className="size-3.5 text-brand-700/60 shrink-0" />
+      </span>
+      <p className="text-2xs text-brand-700/80 mt-0.5 leading-tight">{info.hint}</p>
+    </button>
   );
 }

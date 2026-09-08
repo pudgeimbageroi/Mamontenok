@@ -61,6 +61,13 @@ export type Deal = {
   status: DealStatus;
   comment: string | null;
   channel: Channel;
+  /**
+   * Перевёл ли 沙哥 нашу долю.
+   * null — сделка не через посредника, вопрос не стоит
+   * false — прибыль пока у него
+   * true — деньги у нас
+   */
+  shage_settled: boolean | null;
   /** joint — общая (50/50), private — личная (100% владельцу) */
   visibility: "joint" | "private";
   /** Чья сделка. Обязателен для личных. */

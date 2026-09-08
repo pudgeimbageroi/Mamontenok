@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Wix_Madefor_Display, Wix_Madefor_Text } from "next/font/google";
 import Script from "next/script";
+import { THEME_INIT_SCRIPT } from "@/lib/theme";
 import "./globals.css";
 
 const display = Wix_Madefor_Display({
@@ -17,7 +18,7 @@ const body = Wix_Madefor_Text({
 
 export const metadata: Metadata = {
   title: "Мамонтёнок · Учёт оплат студентов",
-  description: "Веб-аппка для двух партнёров: курсы валют, сделки, касса (ДДС)",
+  description: "Курсы, сделки и касса для двух партнёров",
 };
 
 export const viewport: Viewport = {
@@ -26,19 +27,18 @@ export const viewport: Viewport = {
   maximumScale: 1,
   userScalable: false,
   themeColor: [
-    { media: "(prefers-color-scheme: light)", color: "#FFFFFF" },
-    { media: "(prefers-color-scheme: dark)", color: "#0D1016" },
+    { media: "(prefers-color-scheme: light)", color: "#F6F8FB" },
+    { media: "(prefers-color-scheme: dark)", color: "#080C12" },
   ],
 };
-
-// Ставит .dark ДО первого рендера — без мигания темы (no-FOUC)
-const themeScript = `(function(){try{var t=localStorage.getItem('theme');var m=window.matchMedia('(prefers-color-scheme: dark)').matches;if(t==='dark'||(!t&&m)){document.documentElement.classList.add('dark');}}catch(e){}})();`;
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="ru" className={`${display.variable} ${body.variable}`} suppressHydrationWarning>
       <head>
-        <script dangerouslySetInnerHTML={{ __html: themeScript }} />
+        {/* Ставит класс .dark до первой отрисовки — иначе при тёмной
+            теме на мгновение мелькает белый фон. */}
+        <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
         <Script src="https://telegram.org/js/telegram-web-app.js?56" strategy="beforeInteractive" />
       </head>
       <body className="min-h-screen antialiased">{children}</body>

@@ -63,6 +63,10 @@ export async function POST(req: Request) {
       status: body.status ?? "pending",
       comment: body.comment ?? null,
       channel: body.channel ?? "atb",
+      // Флаг расчёта имеет смысл только для сделок через посредника
+      shage_settled: (body.channel ?? "atb") === "shage"
+        ? (body.shage_settled ?? false)
+        : null,
       visibility,
       // Владелец обязателен для личных, для общих пишем создателя — не мешает
       owner_id: session.profileId,

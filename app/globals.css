@@ -2,80 +2,171 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ═══════════════════════════════════════════════════════════════════
+   ТОКЕНЫ
+
+   Всё построено на переменных, поэтому в компонентах нет ни одного
+   dark: префикса — темы переключаются подменой значений на .dark.
+
+   Формат «R G B» через пробел: так работают модификаторы
+   прозрачности Tailwind (bg-surface/80).
+   ═══════════════════════════════════════════════════════════════════ */
+
 @layer base {
-  /* ─────────── СВЕТЛАЯ (минимализм) ─────────── */
   :root {
-    --card: 255 255 255;
-    --ink-50: 248 250 252;
-    --ink-100: 241 245 249;
-    --ink-200: 226 232 240;
-    --ink-300: 203 213 225;
-    --ink-500: 100 116 139;
-    --ink-700: 51 65 85;
-    --ink-900: 15 23 42;
+    /* Нейтральная шкала: 50 — фон страницы, 900 — основной текст */
+    --ink-50:  246 248 251;
+    --ink-100: 240 244 249;
+    --ink-200: 230 235 242;
+    --ink-300: 211 219 230;
+    /* ink-400 — микро-подписи и подсказки.
+       Взят достаточно тёмным, чтобы проходить WCAG AA (4.5) на белом:
+       более светлый #94A3B8 давал всего 2.56 и заголовки колонок
+       превращались в еле различимый шум. */
+    --ink-400: 100 114 133;
+    --ink-500:  82  96 116;
+    --ink-700:  51  65  85;
+    --ink-800:  30  41  59;
+    --ink-900:  11  18  32;
 
-    --brand-50: 239 246 255;
-    --brand-100: 219 234 254;
-    --brand-200: 191 219 254;
-    --brand-300: 147 197 253;
-    --brand-400: 96 165 250;
-    --brand-500: 8 131 255;
-    --brand-600: 0 102 204;
-    --brand-700: 30 64 175;
-    --brand-800: 0 61 122;
-    --brand-900: 30 58 138;
+    --surface:        255 255 255;
+    --surface-raised: 255 255 255;
+    --surface-sunken: 248 250 252;
 
-    --success: 4 120 87;      --success-bg: 236 253 245;
-    --danger: 185 28 28;      --danger-bg: 254 226 226;
-    --warning: 146 64 14;     --warning-bg: 254 243 199;
-    --input-bg: 255 251 235;
-    --on-brand: 255 255 255;
+    --line:        230 235 242;
+    --line-strong: 211 219 230;
 
-    --background: 0 0% 100%;
-    --foreground: 222 47% 11%;
-    --muted: 210 40% 96.1%;
-    --muted-foreground: 215 16% 47%;
-    --border: 214 32% 91%;
+    --success:    4 120  87;
+    --success-bg: 236 253 245;
+    --danger:   185  28  28;
+    --danger-bg: 254 226 226;
+    --warning:  180  83   9;
+    --warning-bg: 254 243 199;
 
+    --input-bg: 255 255 255;
+
+    /* safe areas (Telegram Mini App + iOS) */
     --safe-top: env(safe-area-inset-top);
     --safe-bottom: env(safe-area-inset-bottom);
     --safe-left: env(safe-area-inset-left);
     --safe-right: env(safe-area-inset-right);
   }
 
-  /* ─────────── ТЁМНАЯ (минимализм) ─────────── */
+  /* ─── Тёмная тема ───
+     Шкала ink инвертируется: ink-900 становится светлым текстом,
+     ink-50 — тёмным фоном. Классы в компонентах не меняются.  */
   .dark {
-    --card: 20 24 31;
-    --ink-50: 13 16 22;
-    --ink-100: 24 29 38;
-    --ink-200: 33 40 52;
-    --ink-300: 52 62 78;
-    --ink-500: 143 154 170;
-    --ink-700: 199 206 217;
-    --ink-900: 237 240 245;
+    --ink-50:    8  12  18;
+    --ink-100:  21  29  40;
+    --ink-200:  30  40  54;
+    --ink-300:  44  58  77;
+    /* Тот же принцип, что и в светлой: микро-подписи должны
+       читаться на всех трёх поверхностях, а не только на самой тёмной */
+    --ink-400: 125 141 163;
+    --ink-500: 152 168 188;
+    --ink-700: 184 197 214;
+    --ink-800: 214 224 236;
+    --ink-900: 233 239 247;
 
-    --brand-50: 22 34 58;
-    --brand-100: 27 44 76;
-    --brand-200: 34 60 105;
-    --brand-300: 60 110 190;
-    --brand-400: 70 140 235;
-    --brand-500: 56 152 255;
-    --brand-600: 96 165 250;
+    --surface:        18  26  36;
+    --surface-raised: 23  33  45;
+    --surface-sunken: 13  19  27;
+
+    --line:        30  40  54;
+    --line-strong: 44  58  77;
+
+    /* В тёмной теме смысловые цвета светлее — иначе не читаются */
+    --success:    52 211 153;
+    --success-bg: 6  46  38;
+    --danger:   248 113 113;
+    --danger-bg: 60  20  22;
+    --warning:  251 191  36;
+    --warning-bg: 56  38   6;
+
+    --input-bg: 13 19 27;
+
+    color-scheme: dark;
+  }
+
+  /* ═══════════════════════════════════════════════════════════════
+     АКЦЕНТ ПО РЕЖИМУ ПРОСМОТРА
+     data-mode на корне приложения перекрашивает все классы brand-*.
+     ═══════════════════════════════════════════════════════════════ */
+
+  :root,
+  [data-mode="joint"] {
+    --brand-50:  239 246 255;
+    --brand-100: 219 234 254;
+    --brand-200: 191 219 254;
+    --brand-300: 147 197 253;
+    --brand-400:  96 165 250;
+    --brand-500:   8 131 255;
+    --brand-600:   0 102 204;
+    --brand-700:  30  64 175;
+    --brand-800:   0  61 122;
+    --brand-900:  30  58 138;
+    --brand-solid: 0 102 204;         /* #0066CC · белый даёт 5.57 */
+    --brand-solid-hover: 0 85 170;    /* #0055AA · 7.29 */
+  }
+
+  [data-mode="private"] {
+    --brand-50:  254 242 242;
+    --brand-100: 254 226 226;
+    --brand-200: 254 202 202;
+    --brand-300: 252 165 165;
+    --brand-400: 248 113 113;
+    --brand-500: 220  38  38;
+    --brand-600: 185  28  28;
+    --brand-700: 153  27  27;
+    --brand-800: 127  29  29;
+    --brand-900:  92  21  21;
+    --brand-solid: 197 32 32;         /* #C52020 · белый даёт 5.83 */
+    --brand-solid-hover: 168 27 27;   /* #A81B1B · 7.40 */
+  }
+
+  [data-mode="all_mine"] {
+    --brand-50:  236 253 245;
+    --brand-100: 209 250 229;
+    --brand-200: 167 243 208;
+    --brand-300: 110 231 183;
+    --brand-400:  52 211 153;
+    --brand-500:  16 185 129;
+    --brand-600:   5 150 105;
+    --brand-700:   4 120  87;
+    --brand-800:   6  95  70;
+    --brand-900:   6  78  59;
+    --brand-solid: 8 134 96;          /* #088660 · белый 4.58, отличим от прибыли */
+    --brand-solid-hover: 6 112 80;    /* #067050 · 6.10 */
+  }
+
+  /* В тёмной теме светлые стопы акцента слишком ярки для заливок,
+     а тёмные — нечитаемы как текст. Меняем их ролями. */
+  .dark [data-mode="joint"],
+  .dark:root {
+    --brand-50:  12  32  56;
+    --brand-100: 16  44  76;
+    --brand-200: 22  60 104;
     --brand-700: 147 197 253;
-    --brand-800: 173 210 255;
-    --brand-900: 200 224 255;
+    --brand-800: 191 219 254;
+    --brand-900: 219 234 254;
+  }
 
-    --success: 52 211 153;    --success-bg: 8 42 33;
-    --danger: 248 113 113;    --danger-bg: 51 20 20;
-    --warning: 251 191 36;    --warning-bg: 48 36 10;
-    --input-bg: 30 27 15;
-    --on-brand: 255 255 255;
+  .dark [data-mode="private"] {
+    --brand-50:  56  16  16;
+    --brand-100: 76  22  22;
+    --brand-200: 104 30  30;
+    --brand-700: 252 165 165;
+    --brand-800: 254 202 202;
+    --brand-900: 254 226 226;
+  }
 
-    --background: 222 30% 8%;
-    --foreground: 210 20% 92%;
-    --muted: 222 20% 16%;
-    --muted-foreground: 215 15% 60%;
-    --border: 222 18% 20%;
+  .dark [data-mode="all_mine"] {
+    --brand-50:   6  46  38;
+    --brand-100:  8  62  50;
+    --brand-200: 11  84  68;
+    --brand-700: 110 231 183;
+    --brand-800: 167 243 208;
+    --brand-900: 209 250 229;
   }
 
   html {
@@ -90,52 +181,93 @@
     -webkit-text-size-adjust: 100%;
   }
 
-  h1, h2, h3, h4, h5, h6 { @apply font-display tracking-tight; }
-
-  ::selection { background: rgb(var(--brand-500) / 0.18); }
-
-  *:focus-visible {
-    outline: 2px solid rgb(var(--brand-500) / 0.6);
-    outline-offset: 2px;
+  h1, h2, h3, h4, h5, h6 {
+    @apply font-display tracking-tight;
   }
 
-  /* тонкий скроллбар */
-  * { scrollbar-width: thin; scrollbar-color: rgb(var(--ink-300)) transparent; }
-  *::-webkit-scrollbar { width: 8px; height: 8px; }
-  *::-webkit-scrollbar-thumb { background: rgb(var(--ink-300)); border-radius: 8px; }
-
+  /* Минимальная touch-target на тачскринах */
   @media (pointer: coarse) {
-    button, a, input, select, textarea, [role="button"] { min-height: 44px; }
-    input[type="checkbox"], input[type="radio"] { min-height: auto; min-width: auto; }
+    button, a, input, select, textarea, [role="button"] {
+      min-height: 44px;
+    }
+    input[type="checkbox"], input[type="radio"],
+    .row-compact, .row-compact * {
+      min-height: auto;
+    }
   }
 
   input[type="number"]::-webkit-outer-spin-button,
-  input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+  input[type="number"]::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
   input[type="number"] { -moz-appearance: textfield; }
+
+  /* Тёмная тема для системных элементов формы */
+  .dark input[type="date"]::-webkit-calendar-picker-indicator {
+    filter: invert(0.8);
+  }
 }
 
 @layer components {
-  /* Базовые примитивы минимал-UI */
-  .card { @apply bg-card border border-ink-200 rounded-xl shadow-card; }
-  .section-title { @apply font-display font-semibold text-ink-900; }
-  .muted-label { @apply text-xs uppercase tracking-wider text-ink-500 font-medium; }
-
-  .text-on-brand { color: rgb(var(--on-brand)); }
-
-  .btn { @apply inline-flex items-center justify-center gap-2 rounded-lg text-sm font-medium transition-colors disabled:opacity-50; }
-  .btn-primary { @apply btn bg-brand-500 hover:bg-brand-600 px-4 py-2.5; color: rgb(var(--on-brand)); }
-  .btn-ghost { @apply btn bg-transparent text-ink-700 hover:bg-ink-100 px-3 py-2; }
-  .btn-outline { @apply btn border border-ink-200 text-ink-700 hover:bg-ink-50 px-4 py-2.5; }
-
-  .input {
-    @apply w-full bg-card border border-ink-200 rounded-lg px-3 py-2.5 text-sm text-ink-900
-           placeholder:text-ink-500/70 transition-colors;
+  /* ─── Числа ───
+     tabular-nums выравнивает разряды по колонкам: суммы можно
+     сравнивать глазом, а лишний ноль сразу выбивается из строя. */
+  .num {
+    font-variant-numeric: tabular-nums;
+    letter-spacing: -0.01em;
   }
-  .input:focus { @apply border-brand-400 outline-none; box-shadow: 0 0 0 3px rgb(var(--brand-500) / 0.15); }
 
-  .chip { @apply inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded-md; }
+  /* Микро-подпись колонки или секции */
+  .label-micro {
+    @apply text-2xs font-medium uppercase tracking-micro text-ink-400;
+  }
 
-  .kpi-number { @apply font-display font-bold text-brand-800 tabular-nums; }
+  /* Строка таблицы */
+  .row-compact {
+    @apply flex items-center gap-3 px-3.5 py-2.5 border-b border-line
+           transition-colors hover:bg-ink-100/60;
+  }
+
+  /* Панель — основной контейнер экрана */
+  .panel {
+    @apply bg-surface border border-line rounded-xl overflow-hidden;
+  }
+
+  .panel-head {
+    @apply flex items-center justify-between gap-3 px-3.5 py-3 border-b border-line;
+  }
+
+  /* Кнопки */
+  .btn {
+    @apply inline-flex items-center justify-center gap-1.5 rounded-lg
+           text-sm font-medium transition-colors px-3.5 py-2
+           disabled:opacity-50 disabled:pointer-events-none;
+  }
+  .btn-primary { @apply btn bg-brand-solid text-white hover:bg-brand-solid-hover; }
+  .btn-ghost {
+    @apply btn border border-line-strong text-ink-700
+           hover:bg-ink-100 hover:text-ink-900;
+  }
+
+  /* Поля ввода */
+  .field {
+    @apply w-full bg-input-bg border border-line-strong rounded-lg
+           px-3 py-2 text-sm text-ink-900 placeholder:text-ink-400
+           focus:outline-none focus:border-brand-500 focus:ring-2
+           focus:ring-brand-500/25 transition-all;
+  }
+
+  /* Чип фильтра */
+  .chip {
+    @apply shrink-0 text-xs font-medium px-2.5 py-1.5 rounded-md
+           border border-line-strong text-ink-500
+           hover:text-ink-900 hover:border-ink-400 transition-colors;
+  }
+  .chip-on {
+    @apply chip bg-brand-solid border-brand-solid text-white
+           hover:bg-brand-solid-hover hover:text-white hover:border-brand-solid-hover;
+  }
 
   .pb-safe { padding-bottom: max(env(safe-area-inset-bottom), 1rem); }
   .pt-safe { padding-top: env(safe-area-inset-top); }

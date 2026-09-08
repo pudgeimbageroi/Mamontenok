@@ -3,39 +3,23 @@
 import Link from "next/link";
 import { useMemo } from "react";
 import {
-  AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell,
-  XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
+  AreaChart, Area, BarChart, Bar, XAxis, YAxis, LabelList,
+  Tooltip, ResponsiveContainer, CartesianGrid, Cell, ReferenceLine,
 } from "recharts";
 import {
-  TrendingUp, Hourglass, Trophy, Calendar, ChevronRight,
-  ArrowDownRight, ArrowUpRight, Sparkles, Crown,
+  TrendingUp, TrendingDown, Hourglass, ChevronRight, Calculator,
+  ClipboardList, Wallet, ArrowUpRight, ArrowDownRight, AlertTriangle, UserRound,
 } from "lucide-react";
-import { cn, formatRub, formatCny, formatDate } from "@/lib/utils";
-import { statusInfo, DEAL_STATUSES, type DealStatus } from "@/lib/deal-statuses";
+import { cn, formatRub, formatCny, plural } from "@/lib/utils";
+import { statusInfo, type DealStatus } from "@/lib/deal-statuses";
+import { channelInfo } from "@/lib/channels";
 import type { Deal } from "@/lib/types";
 import type { CashflowRow } from "@/lib/cash-categories";
 import type { ViewMode } from "@/lib/visibility";
+import { PageHeader, Panel, PanelHead, Num, StatStrip, StatusDot, type Metric } from "@/components/ui/primitives";
 
-const MONTHS_RU = ["Янв", "Фев", "Мар", "Апр", "Май", "Июн", "Июл", "Авг", "Сен", "Окт", "Ноя", "Дек"];
-
+const MONTHS = ["Янв", "Фев", "Мар", "Апр", "Май", "Июн", "Июл", "Авг", "Сен", "Окт", "Ноя", "Дек"];
 const UNCLOSED: DealStatus[] = ["pending", "received_rub", "qr_paid"];
-
-const COLORS = {
-  brand: "#0883FF",
-  brandDeep: "#003D7A",
-  amber: "#F59E0B",
-  success: "#047857",
-  danger: "#B91C1C",
-  ink: "#64748B",
-};
-
-const STATUS_COLORS: Record<DealStatus, string> = {
-  pending:      "#F59E0B",
-  received_rub: "#0883FF",
-  qr_paid:      "#1E40AF",
-  completed:    "#047857",
-  cancelled:    "#B91C1C",
-};
 
 export function DashboardClient({
   userName,
@@ -49,482 +33,380 @@ export function DashboardClient({
   mode?: ViewMode;
 }) {
   const stats = useMemo(() => {
-    const completedDeals = deals.filter((d) => d.status === "completed");
-    const profitRub = completedDeals.reduce((s, d) => s + (d.profit_rub ?? 0), 0);
-    // Моя доля с учётом типа сделки: личная — вся, общая — половина
-    const myShareRub = completedDeals.reduce((s, d) => s + (d.owner_share_rub ?? 0), 0);
-    const profitCny = completedDeals.reduce((s, d) => {
-      return d.atb_rate > 0 ? s + (d.profit_rub ?? 0) / d.atb_rate : s;
-    }, 0);
-    const dealsInProgress = deals.filter((d) => UNCLOSED.includes(d.status as DealStatus)).length;
-    const revenue = completedDeals.reduce((s, d) => s + (d.student_pays_rub ?? 0), 0);
-    const margin = revenue > 0 ? profitRub / revenue : 0;
+    const done = deals.filter((d) => d.status === "completed");
+    const profit = done.reduce((s, d) => s + (d.profit_rub ?? 0), 0);
+    const myShare = done.reduce((s, d) => s + (d.owner_share_rub ?? 0), 0);
+    const partnerShare = done.reduce((s, d) => s + (d.partner_share_rub ?? 0), 0);
+    const revenue = done.reduce((s, d) => s + (d.student_pays_rub ?? 0), 0);
+    const profitCny = done.reduce(
+      (s, d) => (d.atb_rate > 0 ? s + (d.profit_rub ?? 0) / d.atb_rate : s), 0);
 
-    const withdrawnSemyon = cashflow.filter((c) => c.category === "withdrawal_to_semyon").reduce((s, c) => s + c.amount_rub, 0);
-    const withdrawnEgor = cashflow.filter((c) => c.category === "withdrawal_to_egor").reduce((s, c) => s + c.amount_rub, 0);
+    const open = deals.filter((d) => UNCLOSED.includes(d.status as DealStatus));
+    const openRub = open.reduce((s, d) => s + (d.student_pays_rub ?? 0), 0);
 
-    // В общем режиме доли считаются 50/50 от общей прибыли.
-    // В личном / «всё моё» — моя доля берётся из owner_share_rub,
-    // где личные сделки дают 100%.
-    const partnerShare = completedDeals.reduce((s, d) => s + (d.partner_share_rub ?? 0), 0);
+    // Прибыль по сделкам через 沙哥, где он ещё не рассчитался:
+    // в общую цифру она входит, но физически денег у нас нет
+    const shagePending = deals.filter((d) => d.channel === "shage" && d.shage_settled === false);
+    const shageDebtRub = shagePending.reduce((s, d) => s + (d.profit_rub ?? 0), 0);
+    const shageDebtCny = shagePending.reduce(
+      (s, d) => s + (d.atb_rate > 0 ? (d.profit_rub ?? 0) / d.atb_rate : 0), 0);
+
+    const wSem = cashflow.filter((c) => c.category === "withdrawal_to_semyon")
+      .reduce((s, c) => s + c.amount_rub, 0);
+    const wEg = cashflow.filter((c) => c.category === "withdrawal_to_egor")
+      .reduce((s, c) => s + c.amount_rub, 0);
 
     return {
-      profitRub, profitCny, dealsInProgress, revenue, margin,
-      myShare: myShareRub,
-      egorShare: partnerShare,
-      myToPay: myShareRub - withdrawnSemyon,
-      egorToPay: partnerShare - withdrawnEgor,
+      profit, myShare, partnerShare, revenue, profitCny,
+      margin: revenue > 0 ? profit / revenue : 0,
+      openCount: open.length, openRub,
+      shageDebtRub, shageDebtCny, shagePendingCount: shagePending.length,
+      doneCount: done.length,
+      myToPay: myShare - wSem,
+      egorToPay: partnerShare - wEg,
     };
   }, [deals, cashflow]);
 
-  // Помесячная динамика — за последние 12 месяцев
-  const monthlyData = useMemo(() => {
+  const monthly = useMemo(() => {
     const now = new Date();
-    const months: Array<{ key: string; label: string; profit: number; revenue: number; count: number }> = [];
-
+    const out: { key: string; label: string; profit: number; revenue: number; count: number }[] = [];
     for (let i = 11; i >= 0; i--) {
       const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
-      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
-      months.push({ key, label: MONTHS_RU[d.getMonth()], profit: 0, revenue: 0, count: 0 });
+      out.push({
+        key: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`,
+        label: MONTHS[d.getMonth()], profit: 0, revenue: 0, count: 0,
+      });
     }
-
     for (const d of deals) {
-      const key = d.date.slice(0, 7);
-      const m = months.find((x) => x.key === key);
-      if (m && d.status === "completed") {
-        m.profit += d.profit_rub ?? 0;
-        m.revenue += d.student_pays_rub ?? 0;
-        m.count += 1;
-      }
+      if (d.status !== "completed") continue;
+      const b = out.find((x) => d.date.startsWith(x.key));
+      if (!b) continue;
+      b.profit += d.profit_rub ?? 0;
+      b.revenue += d.student_pays_rub ?? 0;
+      b.count += 1;
     }
-    return months;
+    return out;
   }, [deals]);
 
-  // Статусы — pie
-  const statusData = useMemo(() => {
-    return DEAL_STATUSES.map((s) => ({
-      name: s.label,
-      value: deals.filter((d) => d.status === s.value).length,
-      status: s.value,
-      color: STATUS_COLORS[s.value],
-    })).filter((s) => s.value > 0);
+  const byChannel = useMemo(() => {
+    const done = deals.filter((d) => d.status === "completed");
+    return (["atb", "atb_ip", "shage"] as const).map((ch) => {
+      const rows = done.filter((d) => (d.channel ?? "atb") === ch);
+      return {
+        label: channelInfo(ch).shortLabel,
+        profit: rows.reduce((s, d) => s + (d.profit_rub ?? 0), 0),
+        count: rows.length,
+      };
+    }).filter((x) => x.count > 0);
   }, [deals]);
 
-  // Универы — bar
-  const universityData = useMemo(() => {
-    const map = new Map<string, { revenue: number; profit: number; count: number }>();
-    for (const d of deals) {
-      if (!d.university || d.status !== "completed") continue;
-      const m = map.get(d.university) ?? { revenue: 0, profit: 0, count: 0 };
-      m.revenue += d.student_pays_rub ?? 0;
-      m.profit += d.profit_rub ?? 0;
-      m.count += 1;
-      map.set(d.university, m);
-    }
-    return Array.from(map.entries())
-      .map(([name, v]) => ({ name, ...v }))
-      .sort((a, b) => b.profit - a.profit)
-      .slice(0, 5);
-  }, [deals]);
+  const recent = useMemo(() => deals.slice(0, 6), [deals]);
 
-  // За периоды
-  const periods = useMemo(() => {
-    const today = new Date(); today.setHours(0, 0, 0, 0);
-    const todayISO = today.toISOString().slice(0, 10);
-    const ago7 = new Date(today); ago7.setDate(ago7.getDate() - 7);
-    const ago30 = new Date(today); ago30.setDate(ago30.getDate() - 30);
+  // Ориентиры для графика: пик и среднее за год
+  const maxMonth = useMemo(() => Math.max(0, ...monthly.map((m) => m.profit)), [monthly]);
+  const avgMonth = useMemo(() => {
+    const active = monthly.filter((m) => m.profit > 0);
+    return active.length ? active.reduce((s, m) => s + m.profit, 0) / active.length : 0;
+  }, [monthly]);
 
-    const slice = (since: Date | string) => {
-      const sinceIso = since instanceof Date ? since.toISOString().slice(0, 10) : since;
-      return deals.filter((d) => d.date >= sinceIso && d.status === "completed");
-    };
+  const metrics: Metric[] = [
+    {
+      label: mode === "joint" ? "Прибыль всего" : "Мой заработок",
+      value: formatRub(mode === "joint" ? stats.profit : stats.myShare),
+      tone: "success",
+      // Если часть прибыли ещё у посредника — говорим об этом прямо в карточке
+      hint: stats.shageDebtRub > 0
+        ? `${formatRub(stats.shageDebtRub)} у 沙哥`
+        : `≈ ${formatCny(stats.profitCny)}`,
+      hintTone: stats.shageDebtRub > 0 ? "danger" : "muted",
+    },
+    { label: "Оборот", value: formatRub(stats.revenue),
+      hint: `маржа ${(stats.margin * 100).toFixed(1)}%` },
+    { label: "Сделок закрыто", value: String(stats.doneCount) },
+    { label: "В работе", value: String(stats.openCount),
+      tone: stats.openCount > 0 ? "brand" : "default",
+      hint: stats.openRub > 0 ? `${formatRub(stats.openRub)} висит` : undefined,
+      hintTone: stats.openRub > 0 ? "danger" : "muted" },
+  ];
 
-    const compose = (sel: Deal[]) => ({
-      count: sel.length,
-      revenue: sel.reduce((s, d) => s + (d.student_pays_rub ?? 0), 0),
-      profit: sel.reduce((s, d) => s + (d.profit_rub ?? 0), 0),
-    });
-
-    return {
-      today: compose(slice(todayISO)),
-      week: compose(slice(ago7)),
-      month: compose(slice(ago30)),
-    };
-  }, [deals]);
-
-  // Незакрытые сделки
-  const unclosed = useMemo(() => {
-    const list = deals.filter((d) => UNCLOSED.includes(d.status as DealStatus));
-    return {
-      count: list.length,
-      frozenRub: list.reduce((s, d) => s + (d.student_pays_rub ?? 0), 0),
-      list,
-    };
-  }, [deals]);
-
-  // Топ-3 сделок
-  const top3 = useMemo(() => {
-    return [...deals]
-      .filter((d) => d.status === "completed")
-      .sort((a, b) => (b.profit_rub ?? 0) - (a.profit_rub ?? 0))
-      .slice(0, 3);
-  }, [deals]);
-
-  const firstName = userName.split(" ")[0];
+  const hour = new Date().getHours();
+  const greet = hour < 5 ? "Доброй ночи" : hour < 12 ? "Доброе утро"
+    : hour < 18 ? "Добрый день" : "Добрый вечер";
 
   return (
-    <div className="space-y-6">
-      {/* Greeting */}
-      <div>
-        <h1 className="text-3xl lg:text-4xl font-display font-bold tracking-tight text-ink-900">
-          Привет, {firstName} 👋
-        </h1>
-        <p className="mt-2 text-ink-500">
-          Общий банк, динамика и что висит на пайплайне
-        </p>
-      </div>
+    <div>
+      <PageHeader title={`${greet}, ${userName.split(" ")[0]}`}
+        subtitle="Сводка по сделкам и деньгам" />
 
-      {/* HERO — Чистая прибыль */}
-      <section className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-brand-500 via-brand-600 to-brand-800 text-white p-8 shadow-xl">
-        <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,_rgba(255,255,255,0.15),_transparent_60%)]" />
-        <div className="relative grid grid-cols-1 lg:grid-cols-3 gap-6 lg:gap-8">
-          <div className="lg:col-span-2">
-            <p className="text-xs font-medium uppercase tracking-widest text-brand-100 mb-2">
-              Чистая прибыль (всего)
-            </p>
-            <div className="flex items-baseline gap-3">
-              <span className="font-display font-bold text-6xl lg:text-7xl tabular-nums tracking-tight">
-                {formatRub(stats.profitRub)}
-              </span>
+      <div className="space-y-4">
+        <Panel><StatStrip items={metrics} /></Panel>
+
+        {/* ─── Долг посредника ─── */}
+        {stats.shagePendingCount > 0 && (
+          <Link href="/app/deals" className="block">
+            <div className="flex items-center gap-3 px-4 py-3 rounded-xl border border-warning/30
+                            bg-warning-bg hover:border-warning/60 transition-colors">
+              <UserRound className="size-4 text-warning shrink-0" />
+              <div className="flex-1 min-w-0 text-xs">
+                <span className="font-medium text-warning">
+                  沙哥 держит {formatCny(stats.shageDebtCny)}
+                </span>
+                <span className="text-ink-500 ml-1.5">
+                  ≈ {formatRub(stats.shageDebtRub)} — прибыль учтена, денег ещё нет
+                </span>
+              </div>
+              <ChevronRight className="size-4 text-ink-400 shrink-0" />
             </div>
-            <p className="text-sm text-brand-100 mt-1">
-              ≈ {formatCny(stats.profitCny)} · маржа {(stats.margin * 100).toFixed(1)}%
-            </p>
-          </div>
-          <div className="grid grid-cols-2 lg:grid-cols-1 gap-3">
-            <HeroStat icon={<Hourglass className="size-4" />} label="Сделок в работе" value={stats.dealsInProgress.toString()} />
-            <HeroStat icon={<TrendingUp className="size-4" />} label="Завершено" value={deals.filter((d) => d.status === "completed").length.toString()} />
-          </div>
-        </div>
-      </section>
-
-      {/* Доли партнёров.
-          В чисто личном режиме доля Егора всегда 0 — карточку не показываем,
-          иначе она только сбивает с толку. */}
-      <section className={cn(
-        "grid gap-3",
-        mode === "private" ? "grid-cols-1" : "grid-cols-1 sm:grid-cols-2",
-      )}>
-        <PartnerKpi
-          name={mode === "private" ? "Моя прибыль (личные)" : "Моя доля (Семён)"}
-          emoji="🪨"
-          accumulated={stats.myShare}
-          toPay={stats.myToPay}
-          atbRate={deals[0]?.atb_rate ?? 0}
-        />
-        {mode !== "private" && (
-          <PartnerKpi
-            name="Доля Егора"
-            emoji="🪨"
-            accumulated={stats.egorShare}
-            toPay={stats.egorToPay}
-            atbRate={deals[0]?.atb_rate ?? 0}
-          />
+          </Link>
         )}
-      </section>
 
-      {/* Помесячная динамика — большая чарт-карточка */}
-      <section className="bg-white border border-ink-200 rounded-2xl p-5">
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="font-display font-semibold text-ink-900">Прибыль по месяцам</h2>
-          <p className="text-xs text-ink-500">последние 12 месяцев</p>
-        </div>
-        <div className="h-64 -ml-3">
-          <ResponsiveContainer width="100%" height="100%">
-            <AreaChart data={monthlyData}>
-              <defs>
-                <linearGradient id="profitGradient" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor={COLORS.brand} stopOpacity={0.4} />
-                  <stop offset="100%" stopColor={COLORS.brand} stopOpacity={0} />
-                </linearGradient>
-              </defs>
-              <CartesianGrid strokeDasharray="3 3" stroke="#E2E8F0" />
-              <XAxis dataKey="label" tick={{ fontSize: 11, fill: "#64748B" }} axisLine={false} tickLine={false} />
-              <YAxis tick={{ fontSize: 11, fill: "#64748B" }} axisLine={false} tickLine={false}
-                tickFormatter={(v) => v >= 1000 ? `${(v / 1000).toFixed(0)}k` : v.toString()} />
-              <Tooltip
-                contentStyle={{ backgroundColor: "#FFFFFF", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 12 }}
-                formatter={(value: number) => formatRub(value)}
-                labelStyle={{ color: "#64748B", fontWeight: 500 }}
-              />
-              <Area type="monotone" dataKey="profit" stroke={COLORS.brand} strokeWidth={2.5} fill="url(#profitGradient)" />
-            </AreaChart>
-          </ResponsiveContainer>
-        </div>
-      </section>
-
-      {/* Two charts */}
-      <section className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        {/* Pie — статусы */}
-        <div className="bg-white border border-ink-200 rounded-2xl p-5">
-          <h2 className="font-display font-semibold text-ink-900 mb-4">Сделки по статусам</h2>
-          {statusData.length === 0 ? (
-            <div className="text-center text-sm text-ink-500 py-12">Пока нет сделок</div>
-          ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-center">
-              <div className="h-44">
-                <ResponsiveContainer width="100%" height="100%">
-                  <PieChart>
-                    <Pie
-                      data={statusData}
-                      dataKey="value"
-                      cx="50%" cy="50%"
-                      innerRadius={40}
-                      outerRadius={70}
-                      paddingAngle={2}
-                    >
-                      {statusData.map((s, i) => <Cell key={i} fill={s.color} />)}
-                    </Pie>
-                    <Tooltip
-                      contentStyle={{ backgroundColor: "#FFFFFF", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 12 }}
-                    />
-                  </PieChart>
-                </ResponsiveContainer>
+        {/* ─── Незакрытые сделки ─── */}
+        {stats.openCount > 0 && (
+          <Link href="/app/deals" className="block">
+            <div className="flex items-center gap-3 px-4 py-3 rounded-xl border border-warning/25
+                            bg-warning-bg hover:border-warning/40 transition-colors">
+              <Hourglass className="size-4 text-warning shrink-0" />
+              <div className="flex-1 min-w-0 text-xs">
+                <span className="font-medium text-warning">
+                  {stats.openCount} {plural(stats.openCount, "сделка", "сделки", "сделок")} в работе
+                </span>
+                <span className="text-ink-500 ml-1.5">
+                  на {formatRub(stats.openRub)} — деньги ещё не в кассе
+                </span>
               </div>
-              <div className="space-y-2">
-                {statusData.map((s) => (
-                  <div key={s.status} className="flex items-center gap-2 text-sm">
-                    <span className="size-2.5 rounded-full" style={{ backgroundColor: s.color }} />
-                    <span className="flex-1 text-ink-700">{s.name}</span>
-                    <span className="font-display font-semibold text-ink-900 tabular-nums">{s.value}</span>
-                  </div>
-                ))}
-              </div>
+              <ChevronRight className="size-4 text-ink-400 shrink-0" />
             </div>
-          )}
-        </div>
+          </Link>
+        )}
 
-        {/* Bar — университеты */}
-        <div className="bg-white border border-ink-200 rounded-2xl p-5">
-          <h2 className="font-display font-semibold text-ink-900 mb-4">Топ универов по прибыли</h2>
-          {universityData.length === 0 ? (
-            <div className="text-center text-sm text-ink-500 py-12">Пока нет сделок</div>
-          ) : (
-            <div className="h-56">
+        <div className="grid grid-cols-1 lg:grid-cols-[1.6fr_1fr] gap-4 items-start">
+          {/* ─── Динамика ─── */}
+          <Panel>
+            <PanelHead title="Прибыль по месяцам"
+              right={
+                <div className="flex items-center gap-3 text-2xs">
+                  <span className="text-ink-400">
+                    макс <span className="num text-ink-700">{formatRub(maxMonth)}</span>
+                  </span>
+                  <span className="text-ink-400">
+                    средн <span className="num text-ink-700">{formatRub(avgMonth)}</span>
+                  </span>
+                </div>
+              } />
+            <div className="px-2 py-3 h-[250px]">
               <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={universityData} layout="vertical" margin={{ left: 30, right: 16 }}>
-                  <CartesianGrid horizontal={false} strokeDasharray="3 3" stroke="#E2E8F0" />
-                  <XAxis type="number" tick={{ fontSize: 11, fill: "#64748B" }} axisLine={false} tickLine={false}
-                    tickFormatter={(v) => v >= 1000 ? `${(v / 1000).toFixed(0)}k` : v.toString()} />
-                  <YAxis type="category" dataKey="name" tick={{ fontSize: 11, fill: "#0F172A" }} axisLine={false} tickLine={false} width={80} />
-                  <Tooltip
-                    contentStyle={{ backgroundColor: "#FFFFFF", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 12 }}
-                    formatter={(value: number) => formatRub(value)}
-                  />
-                  <Bar dataKey="profit" fill={COLORS.brand} radius={[0, 8, 8, 0]} />
-                </BarChart>
+                <AreaChart data={monthly} margin={{ top: 18, right: 10, left: 0, bottom: 0 }}>
+                  <defs>
+                    <linearGradient id="gProfit" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor="rgb(var(--brand-500))" stopOpacity={0.22} />
+                      <stop offset="100%" stopColor="rgb(var(--brand-500))" stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="2 4" stroke="rgb(var(--line))" vertical={false} />
+                  <XAxis dataKey="label" tick={{ fontSize: 10, fill: "rgb(var(--ink-400))" }}
+                    axisLine={false} tickLine={false} dy={4} interval={0} />
+                  <YAxis tick={{ fontSize: 10, fill: "rgb(var(--ink-400))" }}
+                    axisLine={false} tickLine={false} width={52}
+                    tickFormatter={fmtAxis} />
+                  {/* Средняя за год — чтобы месяц читался в контексте */}
+                  {avgMonth > 0 && (
+                    <ReferenceLine y={avgMonth} stroke="rgb(var(--ink-400))"
+                      strokeDasharray="3 3" strokeOpacity={0.6} />
+                  )}
+                  <Tooltip content={<ChartTip />} cursor={{ stroke: "rgb(var(--line-strong))" }} />
+                  <Area type="monotone" dataKey="profit" stroke="rgb(var(--brand-500))"
+                    strokeWidth={2} fill="url(#gProfit)"
+                    dot={{ r: 2.5, fill: "rgb(var(--brand-500))", strokeWidth: 0 }}
+                    activeDot={{ r: 4, strokeWidth: 2, stroke: "rgb(var(--surface))" }}>
+                    {/* Подписи значений прямо на точках — цифры видно без наведения */}
+                    <LabelList dataKey="profit" position="top" offset={8}
+                      content={<ValueLabel />} />
+                  </Area>
+                </AreaChart>
               </ResponsiveContainer>
             </div>
-          )}
-        </div>
-      </section>
+          </Panel>
 
-      {/* За периоды */}
-      <section className="bg-white border border-ink-200 rounded-2xl p-5">
-        <h2 className="font-display font-semibold text-ink-900 mb-4 flex items-center gap-2">
-          <Calendar className="size-4 text-brand-500" /> За периоды
-        </h2>
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-          <PeriodCard label="Сегодня" count={periods.today.count} revenue={periods.today.revenue} profit={periods.today.profit} />
-          <PeriodCard label="За 7 дней" count={periods.week.count} revenue={periods.week.revenue} profit={periods.week.profit} />
-          <PeriodCard label="За 30 дней" count={periods.month.count} revenue={periods.month.revenue} profit={periods.month.profit} />
+          {/* ─── Доли ─── */}
+          <Panel>
+            <PanelHead title={mode === "private" ? "Личная прибыль" : "Доли партнёров"} />
+            <div className="divide-y divide-line">
+              <ShareRow name={mode === "private" ? "Семён · личные" : "Семён"}
+                accumulated={stats.myShare} toPay={stats.myToPay} />
+              {mode !== "private" && (
+                <ShareRow name="Егор" accumulated={stats.partnerShare} toPay={stats.egorToPay} />
+              )}
+            </div>
+            {byChannel.length > 0 && (
+              <>
+                <div className="px-3.5 py-2 border-t border-line bg-surface-sunken">
+                  <span className="label-micro">Прибыль по каналам</span>
+                </div>
+                <div className="px-2 py-3 h-[120px]">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={byChannel} layout="vertical"
+                      margin={{ top: 0, right: 10, left: 0, bottom: 0 }}>
+                      <XAxis type="number" hide />
+                      <YAxis type="category" dataKey="label" width={58}
+                        tick={{ fontSize: 11, fill: "rgb(var(--ink-500))" }}
+                        axisLine={false} tickLine={false} />
+                      <Tooltip content={<ChartTip />} cursor={{ fill: "rgb(var(--ink-100))" }} />
+                      <Bar dataKey="profit" radius={[0, 3, 3, 0]} barSize={14}>
+                        {byChannel.map((_, i) => (
+                          <Cell key={i} fill="rgb(var(--brand-500))" fillOpacity={1 - i * 0.25} />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </>
+            )}
+          </Panel>
         </div>
-      </section>
 
-      {/* Two widgets */}
-      <section className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        {/* Незакрытые */}
-        <div className="bg-white border border-ink-200 rounded-2xl p-5">
-          <div className="flex items-center justify-between mb-3">
-            <h2 className="font-display font-semibold text-ink-900 flex items-center gap-2">
-              <Hourglass className="size-4 text-warning" /> Незакрытые сделки
-            </h2>
-            <span className="text-xs px-2 py-0.5 rounded-md bg-warning-bg text-warning font-medium">
-              {unclosed.count} шт
-            </span>
-          </div>
-          {unclosed.list.length === 0 ? (
-            <div className="text-center text-sm text-ink-500 py-6">
-              ✨ Всё закрыто, красавчики
+        {/* ─── Последние сделки ─── */}
+        <Panel>
+          <PanelHead title="Последние сделки"
+            right={
+              <Link href="/app/deals"
+                className="text-2xs text-brand-700 hover:text-brand-800 inline-flex items-center gap-0.5">
+                Все <ChevronRight className="size-3" />
+              </Link>
+            } />
+          {recent.length === 0 ? (
+            <div className="px-4 py-10 text-center text-sm text-ink-400">
+              Сделок пока нет
             </div>
           ) : (
-            <>
-              <p className="text-xs text-ink-500 mb-3">
-                Заморожено оборота: <span className="font-display font-bold text-warning">{formatRub(unclosed.frozenRub)}</span>
-              </p>
-              <div className="space-y-2">
-                {unclosed.list.slice(0, 5).map((d) => {
-                  const s = statusInfo(d.status);
-                  return (
-                    <Link
-                      key={d.id}
-                      href={`/app/deals/${d.id}`}
-                      className="flex items-center gap-3 -mx-2 px-2 py-2 rounded-lg hover:bg-ink-50 transition-colors"
-                    >
-                      <span className={cn("text-[10px] font-medium px-1.5 py-0.5 rounded uppercase tracking-wider shrink-0", s.color)}>
-                        {s.label}
-                      </span>
-                      <span className="flex-1 text-sm text-ink-900 truncate">{d.student_name}</span>
-                      <span className="text-xs text-ink-500 tabular-nums">{formatCny(d.amount_cny)}</span>
-                      <ChevronRight className="size-3.5 text-ink-300" />
-                    </Link>
-                  );
-                })}
-              </div>
-            </>
-          )}
-        </div>
-
-        {/* Топ-3 */}
-        <div className="bg-white border border-ink-200 rounded-2xl p-5">
-          <h2 className="font-display font-semibold text-ink-900 mb-4 flex items-center gap-2">
-            <Trophy className="size-4 text-amber-500" /> Топ-3 сделок по прибыли
-          </h2>
-          {top3.length === 0 ? (
-            <div className="text-center text-sm text-ink-500 py-6">Пока нет завершённых</div>
-          ) : (
-            <div className="space-y-2">
-              {top3.map((d, i) => (
-                <Link
-                  key={d.id}
-                  href={`/app/deals/${d.id}`}
-                  className="flex items-center gap-3 -mx-2 px-2 py-2 rounded-lg hover:bg-ink-50 transition-colors"
-                >
-                  <div className={cn(
-                    "size-8 rounded-full flex items-center justify-center font-display font-bold text-sm shrink-0",
-                    i === 0 ? "bg-amber-100 text-amber-700" :
-                    i === 1 ? "bg-ink-100 text-ink-700" :
-                    "bg-orange-100 text-orange-700",
-                  )}>
-                    {i === 0 ? "🥇" : i === 1 ? "🥈" : "🥉"}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm font-display font-semibold text-ink-900 truncate">{d.student_name}</p>
-                    <p className="text-xs text-ink-500 truncate">{d.university ?? "—"} · {formatDate(d.date)}</p>
-                  </div>
-                  <div className="text-right shrink-0">
-                    <p className="font-display font-bold text-sm text-success tabular-nums">
-                      +{formatRub(d.profit_rub)}
-                    </p>
-                    {d.atb_rate > 0 && (
-                      <p className="text-[10px] text-ink-500 tabular-nums">
-                        ≈ {formatCny(d.profit_rub / d.atb_rate)}
-                      </p>
-                    )}
-                  </div>
-                  <ChevronRight className="size-3.5 text-ink-300" />
+            recent.map((d) => {
+              const st = statusInfo(d.status);
+              const profit = d.profit_rub ?? 0;
+              const tone = profit >= 5000 ? "success" : profit < 0 ? "danger" : "warning";
+              const Icon = profit < 0 ? TrendingDown : profit >= 5000 ? TrendingUp : AlertTriangle;
+              return (
+                <Link key={d.id} href={`/app/deals/${d.id}`}
+                  className="flex items-center gap-3 px-3.5 py-2.5 border-b border-line
+                             hover:bg-ink-100/60 transition-colors last:border-0">
+                  <StatusDot className={st.dot} />
+                  <span className="flex-1 min-w-0 text-[13px] text-ink-900 truncate">
+                    {d.student_name}
+                  </span>
+                  <span className="hidden sm:block text-2xs text-ink-400 num">
+                    {formatCny(d.amount_cny)}
+                  </span>
+                  <span className={cn("num text-xs font-semibold inline-flex items-center gap-1 shrink-0",
+                    tone === "success" && "text-success",
+                    tone === "danger" && "text-danger",
+                    tone === "warning" && "text-warning")}>
+                    <Icon className="size-3" />
+                    {profit >= 0 ? "+" : ""}{formatRub(profit)}
+                  </span>
                 </Link>
-              ))}
-            </div>
+              );
+            })
           )}
+        </Panel>
+
+        {/* ─── Быстрые ссылки ─── */}
+        <div className="grid grid-cols-3 gap-3">
+          <QuickLink href="/app/calc" Icon={Calculator} label="Калькулятор" hint="Курс и расчёт" />
+          <QuickLink href="/app/deals/new" Icon={ClipboardList} label="Новая сделка" hint="Внести платёж" />
+          <QuickLink href="/app/cash" Icon={Wallet} label="Касса" hint="Остатки и выводы" />
         </div>
-      </section>
-
-      {/* Quick links */}
-      <section className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-        <QuickLink href="/app/deals" icon={<Sparkles />} label="Все сделки" hint={`${deals.length} в журнале`} />
-        <QuickLink href="/app/calc" icon={<ArrowUpRight />} label="Калькулятор" hint="Курсы и расчёт" />
-        <QuickLink href="/app/cash" icon={<Crown />} label="Касса · ДДС" hint="Остаток на АТБ" />
-      </section>
-    </div>
-  );
-}
-
-// ═══════════════════════════════════════════════════════════════════
-function HeroStat({ icon, label, value }: { icon: React.ReactNode; label: string; value: string }) {
-  return (
-    <div className="bg-white/15 backdrop-blur rounded-2xl p-4">
-      <div className="flex items-center gap-2 text-brand-100 text-xs font-medium mb-1">
-        {icon} {label}
       </div>
-      <p className="font-display font-bold text-3xl tabular-nums">{value}</p>
     </div>
   );
 }
 
-function PartnerKpi({
-  name, emoji, accumulated, toPay, atbRate,
+function ShareRow({
+  name, accumulated, toPay,
 }: {
-  name: string; emoji: string; accumulated: number; toPay: number; atbRate: number;
+  name: string; accumulated: number; toPay: number;
 }) {
   const owed = toPay > 0;
   return (
-    <div className="bg-white border border-ink-200 rounded-2xl p-5">
-      <div className="flex items-center gap-2 mb-3">
-        <span className="text-xl">{emoji}</span>
-        <h3 className="font-display font-semibold text-ink-900">{name}</h3>
+    <div className="px-3.5 py-3">
+      <div className="flex items-center justify-between gap-3">
+        <span className="text-xs text-ink-700">{name}</span>
+        <Num value={formatRub(accumulated)} size="md" />
       </div>
-      <div className="grid grid-cols-2 gap-3">
-        <div>
-          <p className="text-xs uppercase tracking-wider text-ink-500 font-medium">Накоплено</p>
-          <p className="font-display font-bold text-xl text-brand-800 tabular-nums">{formatRub(accumulated)}</p>
-          {atbRate > 0 && (
-            <p className="text-xs text-ink-500 tabular-nums">≈ {formatCny(accumulated / atbRate)}</p>
-          )}
-        </div>
-        <div>
-          <p className="text-xs uppercase tracking-wider text-ink-500 font-medium">К выплате</p>
-          <p className={cn(
-            "font-display font-bold text-xl tabular-nums",
-            owed ? "text-danger" : "text-success",
-          )}>
-            {formatRub(Math.max(0, toPay))}
-          </p>
-          <p className="text-xs text-ink-500">{owed ? "не выплачено" : "всё закрыто"}</p>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function PeriodCard({ label, count, revenue, profit }: { label: string; count: number; revenue: number; profit: number }) {
-  return (
-    <div className="bg-ink-50 border border-ink-200 rounded-xl p-4">
-      <p className="text-xs uppercase tracking-wider text-ink-500 font-medium mb-2">{label}</p>
-      <div className="space-y-1">
-        <div className="flex items-baseline justify-between">
-          <span className="text-xs text-ink-500">Сделок</span>
-          <span className="font-display font-bold text-lg text-ink-900 tabular-nums">{count}</span>
-        </div>
-        <div className="flex items-baseline justify-between">
-          <span className="text-xs text-ink-500">Оборот</span>
-          <span className="font-display font-semibold text-sm text-ink-700 tabular-nums">{formatRub(revenue)}</span>
-        </div>
-        <div className="flex items-baseline justify-between">
-          <span className="text-xs text-ink-500">Прибыль</span>
-          <span className="font-display font-bold text-sm text-success tabular-nums">+{formatRub(profit)}</span>
-        </div>
+      <div className="flex items-center justify-between gap-3 mt-1">
+        <span className="text-2xs text-ink-400">К выплате</span>
+        <span className={cn("num text-xs font-semibold inline-flex items-center gap-1",
+          owed ? "text-danger" : "text-success")}>
+          {owed ? <ArrowUpRight className="size-3" /> : <ArrowDownRight className="size-3" />}
+          {formatRub(Math.max(0, toPay))}
+        </span>
       </div>
     </div>
   );
 }
 
 function QuickLink({
-  href, icon, label, hint,
-}: { href: string; icon: React.ReactNode; label: string; hint: string }) {
+  href, Icon, label, hint,
+}: {
+  href: string; Icon: typeof Calculator; label: string; hint: string;
+}) {
   return (
-    <Link
-      href={href}
-      className="group bg-white border border-ink-200 hover:border-brand-300 hover:shadow-sm rounded-2xl p-4 flex items-center gap-3 transition-all"
-    >
-      <div className="size-10 rounded-xl bg-brand-50 text-brand-700 flex items-center justify-center [&>svg]:size-5">
-        {icon}
-      </div>
-      <div className="flex-1">
-        <p className="font-display font-semibold text-sm text-ink-900">{label}</p>
-        <p className="text-xs text-ink-500">{hint}</p>
-      </div>
-      <ChevronRight className="size-4 text-ink-300 group-hover:text-brand-500 transition-colors" />
+    <Link href={href}
+      className="panel px-3.5 py-3 hover:border-brand-300 transition-colors group">
+      <Icon className="size-4 text-ink-400 group-hover:text-brand-500 transition-colors mb-2" />
+      <div className="text-xs font-medium text-ink-900 truncate">{label}</div>
+      <div className="text-2xs text-ink-400 truncate">{hint}</div>
     </Link>
+  );
+}
+
+/** Компактные подписи оси: 82к вместо 82 400 */
+function fmtAxis(v: number): string {
+  if (Math.abs(v) >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}м`;
+  if (Math.abs(v) >= 1000) return `${Math.round(v / 1000)}к`;
+  return String(Math.round(v));
+}
+
+/** Значение над точкой графика. Нули не подписываем — только шум. */
+function ValueLabel(props: { x?: number; y?: number; value?: number }) {
+  const { x, y, value } = props;
+  if (!value || value <= 0 || x == null || y == null) return null;
+  return (
+    <text x={x} y={y} textAnchor="middle"
+      className="fill-ink-500 num" style={{ fontSize: 9, fontWeight: 500 }}>
+      {fmtAxis(value)}
+    </text>
+  );
+}
+
+interface TipPayload { name?: string; value?: number; dataKey?: string; payload?: Record<string, number> }
+function ChartTip({ active, payload, label }: {
+  active?: boolean; payload?: TipPayload[]; label?: string;
+}) {
+  if (!active || !payload?.length) return null;
+  const row = payload[0]?.payload;
+  return (
+    <div className="bg-surface-raised border border-line-strong rounded-lg px-3 py-2 shadow-lg min-w-[130px]">
+      {label && <div className="text-2xs text-ink-400 mb-1">{label}</div>}
+      <div className="num text-sm font-semibold text-ink-900">
+        {formatRub(payload[0]?.value ?? 0)}
+      </div>
+      {row?.revenue != null && row.revenue > 0 && (
+        <div className="mt-1 pt-1 border-t border-line space-y-0.5">
+          <TipLine label="Оборот" value={formatRub(row.revenue)} />
+          {row.count != null && <TipLine label="Сделок" value={String(row.count)} />}
+          {row.revenue > 0 && (
+            <TipLine label="Маржа"
+              value={`${(((payload[0]?.value ?? 0) / row.revenue) * 100).toFixed(1)}%`} />
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TipLine({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex justify-between gap-3 text-2xs">
+      <span className="text-ink-400">{label}</span>
+      <span className="num text-ink-700">{value}</span>
+    </div>
   );
 }

@@ -3,100 +3,95 @@
 import { useState, useMemo, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import {
-  Wallet, Plus, Trash2, TrendingUp, ArrowDownRight, ArrowUpRight,
-  Coins, Banknote, Users, Building2, Briefcase, UserRound,
+  Plus, Trash2, Building2, Briefcase, UserRound, Lock,
+  ArrowUpRight, ArrowDownRight, Coins, Clock, X,
 } from "lucide-react";
-import { cn, formatRub, formatCny, formatDate, plural } from "@/lib/utils";
+import { cn, formatRub, formatCny, plural } from "@/lib/utils";
 import {
-  CASH_CATEGORIES,
-  cashCategoryInfo,
-  type CashCategory,
-  type CashflowRow,
+  CASH_CATEGORIES, cashCategoryInfo, signedAmount,
+  type CashCategory, type CashflowRow, type CashCurrency, type CashDirection,
 } from "@/lib/cash-categories";
 import type { Deal } from "@/lib/types";
 import { channelInfo } from "@/lib/channels";
 import type { ViewMode } from "@/lib/visibility";
+import {
+  PageHeader, Panel, PanelHead, Num, StatStrip, Tag, EmptyState, type Metric,
+} from "@/components/ui/primitives";
+
+const MONTHS = ["янв", "фев", "мар", "апр", "май", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"];
 
 export function CashClient({
   initialDeals,
   initialCashflow,
   mode = "joint",
   canCreatePrivate = false,
+  currentRate = 0,
 }: {
   initialDeals: Deal[];
   initialCashflow: CashflowRow[];
   mode?: ViewMode;
   canCreatePrivate?: boolean;
+  /** Текущий курс для пересчёта юаневых операций */
+  currentRate?: number;
 }) {
   const [deals] = useState(initialDeals);
   const [cashflow, setCashflow] = useState(initialCashflow);
   const [showForm, setShowForm] = useState(false);
   const router = useRouter();
 
-  // ─── Сводные расчёты ───
   const stats = useMemo(() => {
-    const dealsAtb = deals.filter((d) => (d.channel ?? "atb") === "atb");
-    const dealsAtbIp = deals.filter((d) => d.channel === "atb_ip");
-    const dealsShage = deals.filter((d) => d.channel === "shage");
+    const byCh = (ch: string) => deals.filter((d) => (d.channel ?? "atb") === ch);
+    const sumIn = (r: Deal[]) => r.reduce((s, d) => s + (d.student_pays_rub ?? 0), 0);
+    const sumOut = (r: Deal[]) => r.reduce((s, d) => s + (d.atb_outflow_rub ?? 0), 0);
+    // Со знаком: приход прибавляется, расход вычитается
+    const flow = (ch: string, def = false) =>
+      cashflow.filter((c) => (def ? (c.channel ?? "atb") : c.channel) === ch)
+        .reduce((s, c) => s + signedAmount(c), 0);
 
-    // Общие цифры
-    const incomeRub = deals.reduce((s, d) => s + (d.student_pays_rub ?? 0), 0);
-    const outflowRub = deals.reduce((s, d) => s + (d.atb_outflow_rub ?? 0), 0);
+    const atb = byCh("atb"), ip = byCh("atb_ip"), sha = byCh("shage");
+
+    const channels = [
+      { key: "atb", label: "АТБ · физлицо", Icon: Building2,
+        income: sumIn(atb), outflow: sumOut(atb), flow: flow("atb", true), count: atb.length },
+      { key: "atb_ip", label: "АТБ · ИП", Icon: Briefcase,
+        income: sumIn(ip), outflow: sumOut(ip), flow: flow("atb_ip"), count: ip.length },
+      { key: "shage", label: "沙哥", Icon: UserRound,
+        income: sumIn(sha), outflow: sumOut(sha), flow: flow("shage"), count: sha.length },
+    ].map((c) => ({ ...c, balance: c.income - c.outflow + c.flow }));
+
+    // Долг посредника: прибыль по сделкам, где он ещё не рассчитался
+    const pending = deals.filter((d) => d.channel === "shage" && d.shage_settled === false);
+    const shageDebtRub = pending.reduce((s, d) => s + (d.profit_rub ?? 0), 0);
+    const shageDebtCny = pending.reduce(
+      (s, d) => s + (d.atb_rate > 0 ? (d.profit_rub ?? 0) / d.atb_rate : 0), 0);
+
+    const incomeRub = sumIn(deals);
+    const outflowRub = sumOut(deals);
     const totalCny = deals.reduce((s, d) => s + (d.amount_cny ?? 0), 0);
-    const profitRub = incomeRub - outflowRub;
-    const profitCny = deals.reduce((s, d) => s + (d.amount_cny * ((d.profit_rub ?? 0) / (d.student_pays_rub || 1))), 0);
 
-    // По каналам
-    const atbIncome = dealsAtb.reduce((s, d) => s + (d.student_pays_rub ?? 0), 0);
-    const atbOutflow = dealsAtb.reduce((s, d) => s + (d.atb_outflow_rub ?? 0), 0);
-    const atbIpIncome = dealsAtbIp.reduce((s, d) => s + (d.student_pays_rub ?? 0), 0);
-    const atbIpOutflow = dealsAtbIp.reduce((s, d) => s + (d.atb_outflow_rub ?? 0), 0);
-    const shageIncome = dealsShage.reduce((s, d) => s + (d.student_pays_rub ?? 0), 0);
-    const shageOutflow = dealsShage.reduce((s, d) => s + (d.atb_outflow_rub ?? 0), 0);
-
-    // Общие траты
-    const withdrawnSemyon = cashflow
-      .filter((c) => c.category === "withdrawal_to_semyon")
+    const wSem = cashflow.filter((c) => c.category === "withdrawal_to_semyon")
       .reduce((s, c) => s + c.amount_rub, 0);
-    const withdrawnEgor = cashflow
-      .filter((c) => c.category === "withdrawal_to_egor")
-      .reduce((s, c) => s + c.amount_rub, 0);
-    const otherSpending = cashflow
-      .filter((c) => !["withdrawal_to_semyon", "withdrawal_to_egor"].includes(c.category))
+    const wEg = cashflow.filter((c) => c.category === "withdrawal_to_egor")
       .reduce((s, c) => s + c.amount_rub, 0);
 
-    // Траты по каналам: если у операции есть channel — списываем с него,
-    // если нет — с АТБ (легаси). Выплаты партнёрам без канала — с АТБ по умолчанию.
-    const spendingAtb = cashflow
-      .filter((c) => (c.channel ?? "atb") === "atb")
-      .reduce((s, c) => s + c.amount_rub, 0);
-    const spendingAtbIp = cashflow
-      .filter((c) => c.channel === "atb_ip")
-      .reduce((s, c) => s + c.amount_rub, 0);
-    const spendingShage = cashflow
-      .filter((c) => c.channel === "shage")
-      .reduce((s, c) => s + c.amount_rub, 0);
+    const semAcc = deals.reduce((s, d) => s + (d.owner_share_rub ?? 0), 0);
+    const egAcc = deals.reduce((s, d) => s + (d.partner_share_rub ?? 0), 0);
 
-    const atbBalance = atbIncome - atbOutflow - spendingAtb;
-    const atbIpBalance = atbIpIncome - atbIpOutflow - spendingAtbIp;
-    const shageBalance = shageIncome - shageOutflow - spendingShage;
-    const totalBalance = atbBalance + atbIpBalance + shageBalance;
-
-    // Доли берём из БД: личная сделка даёт владельцу 100%, общая — 50/50
-    const semyonAccumulated = deals.reduce((s, d) => s + (d.owner_share_rub ?? 0), 0);
-    const egorAccumulated = deals.reduce((s, d) => s + (d.partner_share_rub ?? 0), 0);
+    // Начисленный остаток — сколько получилось по всем сделкам и операциям.
+    // Реально доступный — за вычетом того, что физически лежит у посредника:
+    // прибыль по этим сделкам уже посчитана, но денег на руках ещё нет.
+    const accrued = channels.reduce((s, c) => s + c.balance, 0);
 
     return {
-      incomeRub, outflowRub, totalCny, profitRub, profitCny,
-      withdrawnSemyon, withdrawnEgor, otherSpending,
-      // Раздельные балансы
-      atbBalance, atbIpBalance, shageBalance, totalBalance,
-      atbIncome, atbOutflow, atbIpIncome, atbIpOutflow, shageIncome, shageOutflow,
-      spendingAtb, spendingAtbIp, spendingShage,
-      shageDealsCount: dealsShage.length,
-      semyonAccumulated, egorAccumulated,
-      semyonToPay: semyonAccumulated - withdrawnSemyon,
-      egorToPay: egorAccumulated - withdrawnEgor,
+      channels,
+      accrued,
+      total: accrued - shageDebtRub,
+      incomeRub, outflowRub, totalCny,
+      profitRub: incomeRub - outflowRub,
+      shageDebtRub, shageDebtCny, pendingCount: pending.length,
+      withdrawnSemyon: wSem, withdrawnEgor: wEg,
+      semAcc, egAcc,
+      semToPay: semAcc - wSem, egToPay: egAcc - wEg,
     };
   }, [deals, cashflow]);
 
@@ -113,397 +108,256 @@ export function CashClient({
     router.refresh();
   }
 
-  return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div>
-        <h1 className="text-3xl lg:text-4xl font-display font-bold tracking-tight text-ink-900">
-          Касса · ДДС
-        </h1>
-        <p className="mt-2 text-ink-500">
-          Сколько денег пришло, сколько ушло, кому и сколько ещё должны
-        </p>
-      </div>
+  const metrics: Metric[] = [
+    { label: "Приход от студентов", value: formatRub(stats.incomeRub), hint: formatCny(stats.totalCny) },
+    { label: "Отправлено в Китай", value: formatRub(stats.outflowRub) },
+    { label: "Чистая прибыль", value: formatRub(stats.profitRub), tone: "success" },
+    { label: "Выведено партнёрам", value: formatRub(stats.withdrawnSemyon + stats.withdrawnEgor) },
+  ];
 
-      {/* HERO — Общий остаток */}
-      <section className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-brand-500 via-brand-600 to-brand-800 text-white p-8 shadow-xl">
-        <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,_rgba(255,255,255,0.15),_transparent_60%)]" />
-        <div className="relative flex items-center gap-5">
-          <div className="size-16 rounded-2xl bg-white/15 backdrop-blur flex items-center justify-center">
-            <Wallet className="size-8" />
+  return (
+    <div>
+      <PageHeader
+        title="Касса"
+        subtitle="Остатки по счетам, доли и движение денег"
+        actions={
+          <button onClick={() => setShowForm(true)} className="btn-primary">
+            <Plus className="size-4" /> Операция
+          </button>
+        }
+      />
+
+      <div className="space-y-4">
+        <div className="rounded-xl bg-brand-solid text-white overflow-hidden">
+          <div className="px-5 py-4 flex flex-wrap items-end justify-between gap-4">
+            <div>
+              <div className="text-2xs font-medium uppercase tracking-micro text-white/70">
+                {stats.pendingCount > 0 ? "Реально доступно" : "Остаток по всем счетам"}
+              </div>
+              <div className="num font-display font-bold text-3xl lg:text-4xl mt-1">
+                {formatRub(stats.total)}
+              </div>
+            </div>
+            <div className="flex gap-5">
+              {stats.channels.filter((c) => c.count > 0).map((c) => (
+                <div key={c.key}>
+                  <div className="text-2xs text-white/70">{c.label}</div>
+                  <div className="num font-display font-semibold text-sm mt-0.5">
+                    {formatRub(c.balance)}
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
-          <div className="flex-1">
-            <p className="text-xs font-medium uppercase tracking-widest text-brand-100 mb-1">
-              Общий остаток по всем каналам
-            </p>
-            <div className="flex items-baseline gap-2">
-              <span className="font-display font-bold text-5xl lg:text-6xl tabular-nums">
-                {formatRub(stats.totalBalance)}
+
+          {/* Расшифровка: почему доступно меньше, чем начислено */}
+          {stats.pendingCount > 0 && (
+            <div className="px-5 py-2.5 bg-black/15 flex flex-wrap items-center gap-x-4 gap-y-1 text-2xs">
+              <span className="text-white/70">
+                Начислено <span className="num text-white">{formatRub(stats.accrued)}</span>
+              </span>
+              <span className="text-white/50">−</span>
+              <span className="text-white/70">
+                у 沙哥 <span className="num text-white">{formatRub(stats.shageDebtRub)}</span>
+              </span>
+              <span className="text-white/50 hidden sm:inline">
+                · прибыль посчитана, но денег на руках ещё нет
               </span>
             </div>
-            <p className="text-sm text-brand-100 mt-1">
-              АТБ физлицо + АТБ ИП{stats.shageDealsCount > 0 ? " + 沙哥" : ""}
-            </p>
-          </div>
-        </div>
-      </section>
-
-      {/* РАЗДЕЛЬНЫЕ БАЛАНСЫ ПО КАНАЛАМ */}
-      <section className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <ChannelBalance
-          icon={<Building2 />}
-          label="Счёт АТБ (физлицо)"
-          balance={stats.atbBalance}
-          income={stats.atbIncome}
-          outflow={stats.atbOutflow}
-          spending={stats.spendingAtb}
-        />
-        <ChannelBalance
-          icon={<Briefcase />}
-          label="Счёт АТБ (ИП)"
-          balance={stats.atbIpBalance}
-          income={stats.atbIpIncome}
-          outflow={stats.atbIpOutflow}
-          spending={stats.spendingAtbIp}
-        />
-      </section>
-
-      {/* 沙哥 — компактной строкой, отдельного счёта нет */}
-      {stats.shageDealsCount > 0 && (
-        <div className="bg-rose-50 border border-rose-200 rounded-2xl px-5 py-3.5 flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2.5 min-w-0">
-            <UserRound className="size-4 text-rose-600 shrink-0" />
-            <div className="min-w-0">
-              <p className="text-sm font-display font-semibold text-ink-900">
-                Через 沙哥 · {stats.shageDealsCount} {plural(stats.shageDealsCount, "сделка", "сделки", "сделок")}
-              </p>
-              <p className="text-xs text-ink-500 tabular-nums truncate">
-                приход {formatRub(stats.shageIncome)} · отдали {formatRub(stats.shageOutflow)}
-              </p>
-            </div>
-          </div>
-          <p className={cn(
-            "font-display font-bold text-xl tabular-nums shrink-0",
-            stats.shageBalance < 0 ? "text-danger" : "text-rose-700",
-          )}>
-            {formatRub(stats.shageBalance)}
-          </p>
-        </div>
-      )}
-
-      {/* СВОДКА — 4 KPI карточки */}
-      <section className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <KpiCard
-          icon={<ArrowDownRight />}
-          label="Приход от студентов"
-          valueRub={stats.incomeRub}
-          valueCny={stats.totalCny}
-          accent="success"
-        />
-        <KpiCard
-          icon={<ArrowUpRight />}
-          label="Отправлено в Китай"
-          valueRub={stats.outflowRub}
-          valueCny={stats.totalCny}
-          accent="ink"
-        />
-        <KpiCard
-          icon={<TrendingUp />}
-          label="Чистая прибыль"
-          valueRub={stats.profitRub}
-          valueCny={stats.profitCny}
-          accent="brand"
-        />
-        <KpiCard
-          icon={<Banknote />}
-          label="Выведено партнёрам"
-          valueRub={stats.withdrawnSemyon + stats.withdrawnEgor}
-          accent="amber"
-        />
-      </section>
-
-      {/* ДОЛИ ПАРТНЁРОВ.
-          В личном режиме доля Егора всегда 0 — прячем, чтобы не путала. */}
-      <section>
-        <h2 className="text-lg font-display font-semibold text-ink-900 mb-3 flex items-center gap-2">
-          <Users className="size-5 text-brand-500" />
-          {mode === "private" ? "Личная прибыль" : "Доли партнёров — 50 / 50"}
-        </h2>
-        <div className={cn(
-          "grid gap-3",
-          mode === "private" ? "grid-cols-1" : "grid-cols-1 sm:grid-cols-2",
-        )}>
-          <PartnerCard
-            name={mode === "private" ? "Семён (личные сделки)" : "Семён (я)"}
-            emoji="🪨"
-            accumulated={stats.semyonAccumulated}
-            withdrawn={stats.withdrawnSemyon}
-            toPay={stats.semyonToPay}
-          />
-          {mode !== "private" && (
-            <PartnerCard
-              name="Егор"
-              emoji="🪨"
-              accumulated={stats.egorAccumulated}
-              withdrawn={stats.withdrawnEgor}
-              toPay={stats.egorToPay}
-            />
           )}
         </div>
-      </section>
 
-      {/* ЖУРНАЛ ДВИЖЕНИЙ */}
-      <section>
-        <div className="flex items-center justify-between mb-3">
-          <h2 className="text-lg font-display font-semibold text-ink-900 flex items-center gap-2">
-            <Coins className="size-5 text-brand-500" /> Журнал движений
-          </h2>
-          <button
-            onClick={() => setShowForm(true)}
-            className="inline-flex items-center gap-2 bg-brand-500 hover:bg-brand-600 text-white text-sm font-medium px-3 py-2 rounded-lg shadow-sm transition-colors"
-          >
-            <Plus className="size-4" /> Новая операция
-          </button>
-        </div>
-
-        {cashflow.length === 0 ? (
-          <div className="bg-white border border-dashed border-ink-300 rounded-2xl p-10 text-center">
-            <div className="text-4xl mb-3">📋</div>
-            <h3 className="font-display font-semibold text-ink-900 mb-1">Нет движений</h3>
-            <p className="text-sm text-ink-500">Жми «Новая операция» чтобы внести первую.</p>
-          </div>
-        ) : (
-          <div className="space-y-2">
-            {cashflow.map((c) => <CashflowRowItem key={c.id} row={c} onDelete={() => handleDelete(c.id)} />)}
+        {/* ─── Долг посредника ─── */}
+        {stats.pendingCount > 0 && (
+          <div className="flex items-center gap-3 px-4 py-3 rounded-xl border border-warning/30 bg-warning-bg">
+            <Clock className="size-4 text-warning shrink-0" />
+            <div className="flex-1 min-w-0 text-xs">
+              <span className="font-medium text-warning">
+                沙哥 должен {formatCny(stats.shageDebtCny)}
+              </span>
+              <span className="text-ink-500 ml-1.5">
+                ≈ {formatRub(stats.shageDebtRub)} по {stats.pendingCount}{" "}
+                {plural(stats.pendingCount, "сделке", "сделкам", "сделкам")} — отметить можно в списке сделок
+              </span>
+            </div>
           </div>
         )}
-      </section>
 
-      {/* Modal формы */}
+        <Panel><StatStrip items={metrics} /></Panel>
+
+        <Panel>
+          <PanelHead title="Счета" />
+          <div className="grid grid-cols-1 sm:grid-cols-3 divide-y sm:divide-y-0 sm:divide-x divide-line">
+            {stats.channels.map((c) => (
+              <div key={c.key} className={cn("px-4 py-3.5", c.count === 0 && "opacity-50")}>
+                <div className="flex items-center gap-2 mb-2">
+                  <c.Icon className="size-4 text-ink-400 shrink-0" />
+                  <span className="text-xs font-medium text-ink-700 truncate">{c.label}</span>
+                  <span className="ml-auto text-2xs text-ink-400 num shrink-0">{c.count}</span>
+                </div>
+                <Num value={formatRub(c.balance)} size="lg" tone={c.balance < 0 ? "danger" : "default"} />
+                <div className="mt-2 space-y-0.5 text-2xs">
+                  <Line label="Приход" value={`+${formatRub(c.income)}`} tone="success" />
+                  <Line label="В Китай" value={`−${formatRub(c.outflow)}`} />
+                  <Line label="Операции"
+                    value={`${c.flow >= 0 ? "+" : "−"}${formatRub(Math.abs(c.flow))}`}
+                    tone={c.flow > 0 ? "success" : undefined} />
+                </div>
+              </div>
+            ))}
+          </div>
+        </Panel>
+
+        <Panel>
+          <PanelHead title={mode === "private" ? "Личная прибыль" : "Доли партнёров · 50 / 50"} />
+          <div className="grid grid-cols-1 sm:grid-cols-2 divide-y sm:divide-y-0 sm:divide-x divide-line">
+            <PartnerCell name={mode === "private" ? "Семён · личные сделки" : "Семён"}
+              accumulated={stats.semAcc} withdrawn={stats.withdrawnSemyon} toPay={stats.semToPay} />
+            {mode !== "private" && (
+              <PartnerCell name="Егор" accumulated={stats.egAcc}
+                withdrawn={stats.withdrawnEgor} toPay={stats.egToPay} />
+            )}
+          </div>
+        </Panel>
+
+        <Panel>
+          <PanelHead title={`Журнал движений · ${cashflow.length}`} />
+          {cashflow.length === 0 ? (
+            <EmptyState
+              icon={<Coins className="size-8" strokeWidth={1.5} />}
+              title="Движений пока нет"
+              hint="Выводы, налоги и расчёты с 沙哥 появятся здесь."
+              action={
+                <button onClick={() => setShowForm(true)} className="btn-ghost text-xs">
+                  Добавить операцию
+                </button>
+              }
+            />
+          ) : (
+            cashflow.map((row) => (
+              <CashRow key={row.id} row={row} onDelete={() => handleDelete(row.id)} />
+            ))
+          )}
+        </Panel>
+      </div>
+
       {showForm && (
-        <CashflowForm
-          onClose={() => setShowForm(false)}
-          onCreated={handleCreated}
-          canCreatePrivate={canCreatePrivate}
-          defaultPrivate={mode === "private"}
-        />
+        <CashForm onClose={() => setShowForm(false)} onCreated={handleCreated}
+          canCreatePrivate={canCreatePrivate} defaultPrivate={mode === "private"}
+          defaultRate={currentRate} />
       )}
     </div>
   );
 }
 
-// ═══════════════════════════════════════════════════════════════════
-// KPI-карточка
-// ═══════════════════════════════════════════════════════════════════
-function KpiCard({
-  icon, label, valueRub, valueCny, accent,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  valueRub: number;
-  valueCny?: number;
-  accent: "success" | "ink" | "brand" | "amber";
-}) {
-  const accents = {
-    success: { iconBg: "bg-success/10 text-success", number: "text-success" },
-    ink:     { iconBg: "bg-ink-100 text-ink-700",   number: "text-ink-900" },
-    brand:   { iconBg: "bg-brand-50 text-brand-700", number: "text-brand-800" },
-    amber:   { iconBg: "bg-amber-100 text-amber-700", number: "text-amber-700" },
-  }[accent];
-
+function Line({ label, value, tone }: { label: string; value: string; tone?: "success" }) {
   return (
-    <div className="bg-white border border-ink-200 rounded-2xl p-4 space-y-2">
-      <div className="flex items-center justify-between">
-        <p className="text-xs uppercase tracking-wider text-ink-500 font-medium">{label}</p>
-        <div className={cn("size-8 rounded-lg flex items-center justify-center [&>svg]:size-4", accents.iconBg)}>
-          {icon}
-        </div>
-      </div>
-      <p className={cn("font-display font-bold text-xl tabular-nums leading-tight", accents.number)}>
-        {formatRub(valueRub)}
-      </p>
-      {valueCny != null && valueCny > 0 && (
-        <p className="text-xs text-ink-500 tabular-nums">
-          ≈ {formatCny(valueCny)}
-        </p>
-      )}
+    <div className="flex justify-between gap-2">
+      <span className="text-ink-400">{label}</span>
+      <span className={cn("num", tone === "success" ? "text-success" : "text-ink-500")}>{value}</span>
     </div>
   );
 }
 
-// ═══════════════════════════════════════════════════════════════════
-// Карточка баланса по каналу (АТБ / Биржа)
-// ═══════════════════════════════════════════════════════════════════
-function ChannelBalance({
-  icon, label, balance, income, outflow, spending,
+function PartnerCell({
+  name, accumulated, withdrawn, toPay,
 }: {
-  icon: React.ReactNode;
-  label: string;
-  balance: number;
-  income: number;
-  outflow: number;
-  spending: number;
-}) {
-  const negative = balance < 0;
-  return (
-    <div className="bg-white border border-ink-200 rounded-2xl p-5">
-      <div className="flex items-center gap-2 mb-3">
-        <div className="size-9 rounded-xl bg-brand-50 text-brand-700 flex items-center justify-center">
-          {icon}
-        </div>
-        <p className="text-sm font-display font-bold text-ink-900">{label}</p>
-      </div>
-      <div className="flex items-baseline gap-1.5 mb-3">
-        <span className={cn(
-          "font-display font-bold text-3xl tabular-nums",
-          negative ? "text-danger" : "text-ink-900",
-        )}>
-          {formatRub(balance)}
-        </span>
-      </div>
-      <div className="space-y-1 text-xs">
-        <div className="flex justify-between">
-          <span className="text-ink-500">Приход</span>
-          <span className="font-medium text-success tabular-nums">+{formatRub(income)}</span>
-        </div>
-        <div className="flex justify-between">
-          <span className="text-ink-500">В Китай</span>
-          <span className="font-medium text-ink-700 tabular-nums">−{formatRub(outflow)}</span>
-        </div>
-        <div className="flex justify-between">
-          <span className="text-ink-500">Прочие траты</span>
-          <span className="font-medium text-ink-700 tabular-nums">−{formatRub(spending)}</span>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ═══════════════════════════════════════════════════════════════════
-// Карточка партнёра
-// ═══════════════════════════════════════════════════════════════════
-function PartnerCard({
-  name, emoji, accumulated, withdrawn, toPay,
-}: {
-  name: string; emoji: string;
-  accumulated: number; withdrawn: number; toPay: number;
+  name: string; accumulated: number; withdrawn: number; toPay: number;
 }) {
   const owed = toPay > 0;
   return (
-    <div className="bg-white border border-ink-200 rounded-2xl p-5">
-      <div className="flex items-center gap-2 mb-4">
-        <span className="text-2xl">{emoji}</span>
-        <h3 className="font-display font-bold text-ink-900">{name}</h3>
-      </div>
-      <div className="space-y-2">
-        <Stat label="Накоплено доля" value={formatRub(accumulated)} muted />
-        <Stat label="Уже выведено" value={formatRub(withdrawn)} muted />
-        <div className="border-t border-ink-100 pt-2">
-          <Stat
-            label="К выплате"
-            value={formatRub(Math.max(0, toPay))}
-            highlight={owed ? "danger" : "success"}
-          />
+    <div className="px-4 py-3.5">
+      <div className="text-xs font-medium text-ink-700 mb-2">{name}</div>
+      <div className="space-y-1.5">
+        <div className="flex justify-between items-baseline gap-3">
+          <span className="text-2xs text-ink-400">Накоплено</span>
+          <Num value={formatRub(accumulated)} size="sm" tone="muted" />
+        </div>
+        <div className="flex justify-between items-baseline gap-3">
+          <span className="text-2xs text-ink-400">Выведено</span>
+          <Num value={formatRub(withdrawn)} size="sm" tone="muted" />
+        </div>
+        <div className="flex justify-between items-baseline gap-3 pt-1.5 border-t border-line">
+          <span className="text-xs text-ink-900">К выплате</span>
+          <span className={cn("num text-base font-semibold font-display inline-flex items-center gap-1",
+            owed ? "text-danger" : "text-success")}>
+            {owed ? <ArrowUpRight className="size-3.5" /> : <ArrowDownRight className="size-3.5" />}
+            {formatRub(Math.max(0, toPay))}
+          </span>
         </div>
       </div>
     </div>
   );
 }
 
-function Stat({
-  label, value, muted, highlight,
-}: {
-  label: string; value: string; muted?: boolean; highlight?: "success" | "danger";
-}) {
-  return (
-    <div className="flex items-baseline justify-between">
-      <span className={cn("text-sm", muted ? "text-ink-500" : "text-ink-900")}>{label}</span>
-      <span className={cn(
-        "font-display tabular-nums",
-        muted && "text-ink-700",
-        highlight === "success" && "font-bold text-success text-lg",
-        highlight === "danger" && "font-bold text-danger text-lg",
-        !muted && !highlight && "font-semibold text-ink-900",
-      )}>
-        {value}
-      </span>
-    </div>
-  );
-}
-
-// ═══════════════════════════════════════════════════════════════════
-// Строка журнала движений
-// ═══════════════════════════════════════════════════════════════════
-function CashflowRowItem({ row, onDelete }: { row: CashflowRow; onDelete: () => void }) {
+function CashRow({ row, onDelete }: { row: CashflowRow; onDelete: () => void }) {
   const cat = cashCategoryInfo(row.category);
+  const d = new Date(row.date);
+  const isIn = row.direction === "in";
+
   return (
-    <div className="bg-white border border-ink-200 rounded-2xl p-4 group">
-      <div className="flex items-start gap-4">
-        <div className="shrink-0 w-12 text-center">
-          <div className="text-2xl font-display font-bold text-ink-900 leading-none">
-            {new Date(row.date).getDate()}
-          </div>
-          <div className="text-[10px] uppercase tracking-wider text-ink-500 font-medium mt-0.5">
-            {new Date(row.date).toLocaleString("ru-RU", { month: "short" })}
-          </div>
-        </div>
-
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 mb-1">
-            <span className="text-lg">{cat.emoji}</span>
-            <p className="font-display font-semibold text-ink-900 truncate">
-              {cat.label}
-            </p>
-            {row.channel && (
-              <span className={cn(
-                "text-[10px] font-medium px-1.5 py-0.5 rounded",
-                channelInfo(row.channel).badgeClass,
-              )}>
-                {channelInfo(row.channel).shortLabel}
-              </span>
-            )}
-          </div>
-          <p className="text-xs text-ink-500 truncate">
-            {[row.method, row.comment].filter(Boolean).join(" · ") || "—"}
-          </p>
-        </div>
-
-        <div className="text-right shrink-0">
-          <p className="font-display font-bold text-lg text-ink-900 tabular-nums">
-            {formatRub(row.amount_rub)}
-          </p>
-        </div>
-
-        <button
-          onClick={onDelete}
-          className="opacity-0 group-hover:opacity-100 transition-opacity size-8 rounded-lg flex items-center justify-center text-ink-500 hover:bg-danger-bg hover:text-danger"
-          aria-label="Удалить"
-        >
-          <Trash2 className="size-4" />
-        </button>
+    <div className="group flex items-center gap-3 px-3.5 py-2.5 border-b border-line
+                    hover:bg-ink-100/60 transition-colors last:border-0">
+      <div className="w-14 num text-2xs text-ink-400 shrink-0">
+        {String(d.getDate()).padStart(2, "0")} {MONTHS[d.getMonth()]}
       </div>
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-1.5">
+          <span className="text-[13px] text-ink-900 truncate">{cat.label}</span>
+          {row.channel && <Tag>{channelInfo(row.channel).shortLabel}</Tag>}
+          {row.visibility === "private" && <Lock className="size-3 text-warning shrink-0" />}
+        </div>
+        {(row.method || row.comment || row.currency === "CNY") && (
+          <div className="text-2xs text-ink-400 truncate mt-px">
+            {row.currency === "CNY" && row.rate && (
+              <span className="num">по {Number(row.rate).toFixed(4)} · </span>
+            )}
+            {[row.method, row.comment].filter(Boolean).join(" · ")}
+          </div>
+        )}
+      </div>
+      <div className="text-right shrink-0">
+        <span className={cn("num font-display font-semibold text-sm inline-flex items-center gap-1",
+          isIn ? "text-success" : "text-ink-900")}>
+          {isIn ? "+" : "−"}
+          {row.currency === "CNY" && row.amount_cny
+            ? formatCny(row.amount_cny)
+            : formatRub(row.amount_rub)}
+        </span>
+        {row.currency === "CNY" && (
+          <div className="text-2xs text-ink-400 num">{formatRub(row.amount_rub)}</div>
+        )}
+      </div>
+      <button onClick={onDelete} aria-label="Удалить"
+        className="size-6 rounded flex items-center justify-center text-ink-300
+                   opacity-0 group-hover:opacity-100 hover:text-danger hover:bg-danger-bg
+                   transition-all shrink-0">
+        <Trash2 className="size-3.5" />
+      </button>
     </div>
   );
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// Модалка формы новой операции
+// Форма операции
 // ═══════════════════════════════════════════════════════════════════
-function CashflowForm({
-  onClose,
-  onCreated,
-  canCreatePrivate = false,
-  defaultPrivate = false,
+function CashForm({
+  onClose, onCreated, canCreatePrivate = false, defaultPrivate = false, defaultRate = 0,
 }: {
   onClose: () => void;
   onCreated: (row: CashflowRow) => void;
   canCreatePrivate?: boolean;
   defaultPrivate?: boolean;
+  defaultRate?: number;
 }) {
   const today = new Date().toISOString().slice(0, 10);
   const [date, setDate] = useState(today);
   const [category, setCategory] = useState<CashCategory>("withdrawal_to_semyon");
-  const [amount, setAmount] = useState(0);
+  const [direction, setDirection] = useState<CashDirection>("out");
+  const [currency, setCurrency] = useState<CashCurrency>("RUB");
+  const [amountRub, setAmountRub] = useState(0);
+  const [amountCny, setAmountCny] = useState(0);
+  const [rate, setRate] = useState(defaultRate || 13);
   const [method, setMethod] = useState("");
   const [comment, setComment] = useState("");
   const [channel, setChannel] = useState<"atb" | "atb_ip" | "shage">("atb");
@@ -511,16 +365,39 @@ function CashflowForm({
   const [error, setError] = useState<string | null>(null);
   const [saving, startTransition] = useTransition();
 
-  function handleSave() {
+  /** Смена категории подставляет её обычное направление */
+  function pickCategory(c: CashCategory) {
+    setCategory(c);
+    const info = CASH_CATEGORIES.find((x) => x.value === c);
+    if (info) setDirection(info.direction);
+    // Расчёты с посредником почти всегда в юанях
+    if (c === "from_shage" || c === "to_shage") {
+      setCurrency("CNY");
+      setChannel("shage");
+    }
+  }
+
+  const rubEquiv = currency === "CNY" ? amountCny * rate : amountRub;
+
+  function save() {
     setError(null);
-    if (!amount || amount <= 0) { setError("Сумма должна быть > 0"); return; }
+    if (currency === "RUB" && (!amountRub || amountRub <= 0)) {
+      setError("Введи сумму больше нуля"); return;
+    }
+    if (currency === "CNY") {
+      if (!amountCny || amountCny <= 0) { setError("Введи сумму в юанях"); return; }
+      if (!rate || rate <= 0) { setError("Нужен курс пересчёта"); return; }
+    }
 
     startTransition(async () => {
       const res = await fetch("/api/cashflow", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          date, category, amount_rub: amount,
+          date, category, direction, currency,
+          amount_rub: currency === "RUB" ? amountRub : undefined,
+          amount_cny: currency === "CNY" ? amountCny : undefined,
+          rate: currency === "CNY" ? rate : undefined,
           method: method.trim() || null,
           comment: comment.trim() || null,
           channel,
@@ -534,178 +411,181 @@ function CashflowForm({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 bg-ink-900/40 backdrop-blur-sm" onClick={onClose}>
-      <div
-        className="bg-white rounded-t-3xl sm:rounded-3xl w-full max-w-lg shadow-2xl"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="p-6">
-          <h2 className="font-display font-bold text-2xl text-ink-900 mb-5">
-            Новая операция
-          </h2>
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center
+                    p-0 sm:p-4 bg-ink-900/50 backdrop-blur-sm" onClick={onClose}>
+      <div className="bg-surface-raised border border-line rounded-t-2xl sm:rounded-xl
+                      w-full max-w-lg max-h-[92vh] overflow-y-auto"
+        onClick={(e) => e.stopPropagation()}>
+        <div className="panel-head sticky top-0 bg-surface-raised z-10">
+          <span className="text-sm font-display font-semibold text-ink-900">Новая операция</span>
+          <button onClick={onClose} aria-label="Закрыть"
+            className="size-6 rounded flex items-center justify-center text-ink-400
+                       hover:text-ink-900 hover:bg-ink-100 transition-colors">
+            <X className="size-4" />
+          </button>
+        </div>
 
-          <div className="space-y-4">
-            {/* Тип операции — только владельцу */}
-            {canCreatePrivate && (
-              <div className={cn(
-                "flex items-center justify-between gap-3 border-2 rounded-xl px-4 py-3 transition-colors",
-                isPrivate ? "bg-amber-50 border-amber-300" : "bg-white border-ink-200",
-              )}>
-                <div className="min-w-0">
-                  <p className="text-sm font-display font-semibold text-ink-900">
-                    {isPrivate ? "Личная операция" : "Общая операция"}
-                  </p>
-                  <p className="text-xs text-ink-500">
-                    {isPrivate ? "Егор её не увидит" : "Видна обоим, уйдёт в группу"}
-                  </p>
+        <div className="p-4 space-y-3.5">
+          {canCreatePrivate && (
+            <div className={cn("flex items-center justify-between gap-3 px-3 py-2.5 rounded-lg border transition-colors",
+              isPrivate ? "bg-warning-bg border-warning/30" : "bg-surface-sunken border-line")}>
+              <div className="min-w-0">
+                <div className="text-xs font-medium text-ink-900">
+                  {isPrivate ? "Личная операция" : "Общая операция"}
                 </div>
-                <div className="flex gap-1 bg-ink-100 rounded-lg p-1 shrink-0">
-                  <button
-                    type="button"
-                    onClick={() => setIsPrivate(false)}
-                    className={cn(
-                      "text-xs font-medium px-3 py-1.5 rounded-md transition-all",
-                      !isPrivate ? "bg-white text-ink-900 shadow-sm" : "text-ink-500",
-                    )}
-                  >
-                    Общая
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setIsPrivate(true)}
-                    className={cn(
-                      "text-xs font-medium px-3 py-1.5 rounded-md transition-all",
-                      isPrivate ? "bg-amber-500 text-white shadow-sm" : "text-ink-500",
-                    )}
-                  >
-                    Личная
-                  </button>
+                <div className="text-2xs text-ink-400">
+                  {isPrivate ? "Егор не увидит" : "Видна обоим"}
                 </div>
               </div>
-            )}
-            <div>
-              <label className="text-xs uppercase tracking-wider text-ink-500 font-medium block mb-1.5">Дата</label>
-              <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className={inputCls} />
+              <div className="flex gap-0.5 p-0.5 rounded-md bg-ink-100 shrink-0">
+                <button type="button" onClick={() => setIsPrivate(false)}
+                  className={cn("text-2xs font-medium px-2.5 py-1 rounded transition-colors",
+                    !isPrivate ? "bg-surface text-ink-900 shadow-sm" : "text-ink-400")}>Общая</button>
+                <button type="button" onClick={() => setIsPrivate(true)}
+                  className={cn("text-2xs font-medium px-2.5 py-1 rounded transition-colors",
+                    isPrivate ? "bg-warning text-white shadow-sm" : "text-ink-400")}>Личная</button>
+              </div>
             </div>
+          )}
 
-            <div>
-              <label className="text-xs uppercase tracking-wider text-ink-500 font-medium block mb-1.5">Категория</label>
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                {CASH_CATEGORIES.map((c) => (
-                  <button
-                    key={c.value}
-                    type="button"
-                    onClick={() => setCategory(c.value)}
-                    className={cn(
-                      "flex flex-col items-center gap-1 p-2 rounded-xl border-2 text-xs font-medium transition-all",
-                      category === c.value
-                        ? "border-brand-500 ring-4 ring-brand-100 bg-brand-50/50"
-                        : "border-ink-200 hover:border-ink-300",
-                    )}
-                  >
-                    <span className="text-xl">{c.emoji}</span>
-                    <span className="text-center leading-tight">{c.label}</span>
-                  </button>
-                ))}
+          <label className="block">
+            <span className="label-micro">Дата</span>
+            <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="field mt-1" />
+          </label>
+
+          <div>
+            <span className="label-micro">Категория</span>
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5 mt-1">
+              {CASH_CATEGORIES.map((c) => (
+                <button key={c.value} type="button" onClick={() => pickCategory(c.value)}
+                  className={cn("text-xs px-2.5 py-2 rounded-lg border transition-colors text-left",
+                    category === c.value
+                      ? "border-brand-500 bg-brand-50 text-brand-800 font-medium"
+                      : "border-line-strong text-ink-500 hover:text-ink-900")}>
+                  {c.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* ─── Направление ─── */}
+          <div>
+            <span className="label-micro">Направление</span>
+            <div className="grid grid-cols-2 gap-1.5 mt-1">
+              <button type="button" onClick={() => setDirection("out")}
+                className={cn("inline-flex items-center justify-center gap-1.5 text-xs px-2 py-2 rounded-lg border transition-colors",
+                  direction === "out"
+                    ? "border-brand-500 bg-brand-50 text-brand-800 font-medium"
+                    : "border-line-strong text-ink-500")}>
+                <ArrowUpRight className="size-3.5" /> Ушло из кассы
+              </button>
+              <button type="button" onClick={() => setDirection("in")}
+                className={cn("inline-flex items-center justify-center gap-1.5 text-xs px-2 py-2 rounded-lg border transition-colors",
+                  direction === "in"
+                    ? "border-success bg-success-bg text-success font-medium"
+                    : "border-line-strong text-ink-500")}>
+                <ArrowDownRight className="size-3.5" /> Пришло в кассу
+              </button>
+            </div>
+          </div>
+
+          {/* ─── Валюта и сумма ─── */}
+          <div>
+            <div className="flex items-center justify-between gap-2 mb-1">
+              <span className="label-micro">Сумма</span>
+              <div className="flex gap-0.5 p-0.5 rounded-md bg-ink-100">
+                <button type="button" onClick={() => setCurrency("RUB")}
+                  className={cn("text-2xs font-medium px-2.5 py-1 rounded transition-colors",
+                    currency === "RUB" ? "bg-surface text-ink-900 shadow-sm" : "text-ink-400")}>
+                  Рубли
+                </button>
+                <button type="button" onClick={() => setCurrency("CNY")}
+                  className={cn("text-2xs font-medium px-2.5 py-1 rounded transition-colors",
+                    currency === "CNY" ? "bg-surface text-ink-900 shadow-sm" : "text-ink-400")}>
+                  Юани
+                </button>
               </div>
             </div>
 
-            <div>
-              <label className="text-xs uppercase tracking-wider text-ink-500 font-medium block mb-1.5">Сумма ₽</label>
+            {currency === "RUB" ? (
               <div className="flex items-baseline gap-2">
-                <input
-                  type="number" step="0.01" value={amount || ""}
-                  onChange={(e) => setAmount(parseFloat(e.target.value) || 0)}
-                  className={cn(inputCls, "text-2xl font-display font-bold")}
-                  placeholder="0"
-                />
-                <span className="font-display font-bold text-xl text-ink-400">₽</span>
+                <input type="number" step="0.01" value={amountRub || ""} placeholder="0"
+                  onChange={(e) => setAmountRub(parseFloat(e.target.value) || 0)}
+                  className="field num font-display font-bold text-xl" />
+                <span className="font-display font-semibold text-lg text-ink-400">₽</span>
               </div>
-            </div>
-
-            <div>
-              <label className="text-xs uppercase tracking-wider text-ink-500 font-medium block mb-1.5">Счёт</label>
-              <div className="grid grid-cols-3 gap-2">
-                <button
-                  type="button"
-                  onClick={() => setChannel("atb")}
-                  className={cn(
-                    "flex items-center justify-center gap-1.5 p-2.5 rounded-xl border-2 text-sm font-medium transition-all",
-                    channel === "atb"
-                      ? "border-brand-500 bg-brand-50 ring-4 ring-brand-100"
-                      : "border-ink-200 hover:border-ink-300",
-                  )}
-                >
-                  <Building2 className="size-4" /> АТБ
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setChannel("atb_ip")}
-                  className={cn(
-                    "flex items-center justify-center gap-1.5 p-2.5 rounded-xl border-2 text-sm font-medium transition-all",
-                    channel === "atb_ip"
-                      ? "border-brand-500 bg-brand-50 ring-4 ring-brand-100"
-                      : "border-ink-200 hover:border-ink-300",
-                  )}
-                >
-                  <Briefcase className="size-4" /> АТБ ИП
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setChannel("shage")}
-                  className={cn(
-                    "flex items-center justify-center gap-1.5 p-2.5 rounded-xl border-2 text-sm font-medium transition-all",
-                    channel === "shage"
-                      ? "border-brand-500 bg-brand-50 ring-4 ring-brand-100"
-                      : "border-ink-200 hover:border-ink-300",
-                  )}
-                >
-                  <UserRound className="size-4" /> 沙哥
-                </button>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div>
-                <label className="text-xs uppercase tracking-wider text-ink-500 font-medium block mb-1.5">Способ</label>
-                <input
-                  type="text" value={method} onChange={(e) => setMethod(e.target.value)}
-                  placeholder="СБП, карта…" className={inputCls}
-                />
-              </div>
-              <div>
-                <label className="text-xs uppercase tracking-wider text-ink-500 font-medium block mb-1.5">Комментарий</label>
-                <input
-                  type="text" value={comment} onChange={(e) => setComment(e.target.value)}
-                  placeholder="опционально" className={inputCls}
-                />
-              </div>
-            </div>
-
-            {error && (
-              <div className="bg-danger-bg border border-danger/30 text-danger text-sm px-4 py-2.5 rounded-xl">
-                {error}
+            ) : (
+              <div className="space-y-2">
+                <div className="grid grid-cols-[1fr_auto] gap-2 items-end">
+                  <div className="flex items-baseline gap-2">
+                    <input type="number" step="0.01" value={amountCny || ""} placeholder="0"
+                      onChange={(e) => setAmountCny(parseFloat(e.target.value) || 0)}
+                      className="field num font-display font-bold text-xl" />
+                    <span className="font-display font-semibold text-lg text-ink-400">¥</span>
+                  </div>
+                  <label className="block w-[110px]">
+                    <span className="label-micro">Курс</span>
+                    <input type="number" step="0.0001" value={rate || ""}
+                      onChange={(e) => setRate(parseFloat(e.target.value) || 0)}
+                      className="field num mt-1 py-1.5 text-xs" />
+                  </label>
+                </div>
+                <p className="text-2xs text-ink-400">
+                  В рублях это{" "}
+                  <span className="num text-ink-700 font-medium">{formatRub(rubEquiv)}</span>
+                  {" "}— по нему считается баланс
+                </p>
               </div>
             )}
           </div>
 
-          <div className="flex gap-3 mt-6">
-            <button onClick={onClose} className="flex-1 bg-white border border-ink-200 hover:border-ink-300 text-ink-700 font-medium px-4 py-2.5 rounded-xl">
-              Отмена
-            </button>
-            <button
-              onClick={handleSave}
-              disabled={saving}
-              className="flex-1 bg-brand-500 hover:bg-brand-600 text-white font-display font-semibold px-4 py-2.5 rounded-xl disabled:opacity-50"
-            >
-              {saving ? "Сохраняю…" : "Сохранить"}
-            </button>
+          <div>
+            <span className="label-micro">Счёт</span>
+            <div className="grid grid-cols-3 gap-1.5 mt-1">
+              {([
+                ["atb", "АТБ", Building2],
+                ["atb_ip", "АТБ ИП", Briefcase],
+                ["shage", "沙哥", UserRound],
+              ] as const).map(([v, l, Icon]) => (
+                <button key={v} type="button" onClick={() => setChannel(v)}
+                  className={cn("inline-flex items-center justify-center gap-1.5 text-xs px-2 py-2 rounded-lg border transition-colors",
+                    channel === v
+                      ? "border-brand-500 bg-brand-50 text-brand-800 font-medium"
+                      : "border-line-strong text-ink-500 hover:text-ink-900")}>
+                  <Icon className="size-3.5" /> {l}
+                </button>
+              ))}
+            </div>
           </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <label className="block">
+              <span className="label-micro">Способ</span>
+              <input type="text" value={method} onChange={(e) => setMethod(e.target.value)}
+                placeholder="СБП, Alipay" className="field mt-1" />
+            </label>
+            <label className="block">
+              <span className="label-micro">Комментарий</span>
+              <input type="text" value={comment} onChange={(e) => setComment(e.target.value)}
+                placeholder="необязательно" className="field mt-1" />
+            </label>
+          </div>
+
+          {error && (
+            <div className="bg-danger-bg border border-danger/25 text-danger text-xs px-3 py-2 rounded-lg">
+              {error}
+            </div>
+          )}
+        </div>
+
+        <div className="flex gap-2 justify-end px-4 py-3 border-t border-line
+                        sticky bottom-0 bg-surface-raised">
+          <button onClick={onClose} className="btn-ghost text-xs">Отмена</button>
+          <button onClick={save} disabled={saving} className="btn-primary text-xs">
+            {saving ? "Сохраняю" : "Добавить"}
+          </button>
         </div>
       </div>
     </div>
   );
 }
-
-const inputCls =
-  "w-full bg-white border border-ink-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-brand-500 focus:ring-4 focus:ring-brand-100 transition-all tabular-nums";

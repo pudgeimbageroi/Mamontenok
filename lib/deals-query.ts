@@ -14,7 +14,9 @@ import { cookies } from "next/headers";
 import { createSupabaseAdmin } from "./supabase/server";
 import type { SessionPayload } from "./auth";
 import type { Deal } from "./types";
+import type { AuditRow } from "./audit";
 import type { CashflowRow } from "./cash-categories";
+import type { ClientRecord } from "./clients";
 import {
   isOwner,
   resolveViewMode,
@@ -140,6 +142,95 @@ export async function fetchCashflow(
     return [];
   }
   return (data ?? []) as CashflowRow[];
+}
+
+/**
+ * История изменений одной сделки.
+ *
+ * Права проверяем через саму сделку: если она недоступна,
+ * то и её история — тоже. Иначе аудит стал бы дырой в приватности.
+ */
+export async function fetchDealAudit(
+  session: SessionPayload,
+  dealId: string,
+): Promise<AuditRow[]> {
+  const deal = await fetchDealById(session, dealId);
+  if (!deal) return [];
+
+  const supabase = await createSupabaseAdmin();
+  const { data, error } = await supabase
+    .from("deal_audit")
+    .select("*")
+    .eq("deal_id", dealId)
+    .order("created_at", { ascending: false });
+
+  if (error) {
+    console.error("[deals-query] fetchDealAudit:", error.message);
+    return [];
+  }
+  return (data ?? []) as AuditRow[];
+}
+
+/**
+ * Карточки клиентов в рамках режима.
+ *
+ * Приватность работает так же, как у сделок, но с важной оговоркой:
+ * клиент помечается личным только пока ВСЕ его сделки личные. Первая же
+ * общая сделка «повышает» карточку до общей — это делает триггер в базе.
+ * Иначе имя студента всплыло бы у Егора в списке сделок, но не в клиентах.
+ */
+export async function fetchClients(
+  session: SessionPayload,
+  mode: ViewMode,
+): Promise<ClientRecord[]> {
+  const supabase = await createSupabaseAdmin();
+  const visibilities = visibilitiesForMode(mode);
+  const wantsPrivate = visibilities.includes("private");
+
+  let q = supabase.from("clients").select("*").order("name", { ascending: true });
+
+  const canSeePrivate = wantsPrivate && isOwner(session) && isSafeProfileId(session.profileId);
+
+  if (!canSeePrivate) {
+    q = q.eq("visibility", "joint");
+  } else if (visibilities.length === 1) {
+    q = q.eq("visibility", "private").eq("owner_id", session.profileId);
+  } else {
+    q = q.or(`visibility.eq.joint,and(visibility.eq.private,owner_id.eq.${session.profileId})`);
+  }
+
+  const { data, error } = await q;
+  if (error) {
+    console.error("[deals-query] fetchClients:", error.message);
+    return [];
+  }
+  return (data ?? []) as ClientRecord[];
+}
+
+/** Одна карточка клиента — с той же проверкой доступа, что у сделки */
+export async function fetchClientById(
+  session: SessionPayload,
+  id: string,
+): Promise<ClientRecord | null> {
+  const supabase = await createSupabaseAdmin();
+  const { data, error } = await supabase.from("clients").select("*").eq("id", id).single();
+  if (error || !data) return null;
+
+  const client = data as ClientRecord;
+  if (client.visibility === "private") {
+    if (!isOwner(session)) return null;
+    if (client.owner_id !== session.profileId) return null;
+  }
+  return client;
+}
+
+/** Имена авторов правок — чтобы в истории были люди, а не UUID */
+export async function fetchProfileNames(): Promise<Record<string, string>> {
+  const supabase = await createSupabaseAdmin();
+  const { data } = await supabase.from("profiles").select("id, display_name");
+  const out: Record<string, string> = {};
+  for (const p of data ?? []) out[p.id] = p.display_name;
+  return out;
 }
 
 /**

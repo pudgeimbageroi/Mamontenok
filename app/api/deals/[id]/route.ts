@@ -39,13 +39,18 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   if (!oldDeal) return NextResponse.json(NOT_FOUND, { status: 404 });
 
   const body = await req.json();
+
+  // Переключение флага расчёта с 沙哥 — частое действие прямо из списка.
+  // Обрабатываем отдельно: своё уведомление, без разбора «что изменилось».
+  const isSettleToggle =
+    Object.keys(body).length === 1 && "shage_settled" in body;
   const supabase = await createSupabaseAdmin();
 
   const updates: Record<string, unknown> = { updated_by: session.profileId };
   for (const key of [
     "date", "student_name", "university", "city", "purpose",
     "amount_cny", "atb_rate", "cbr_rate", "my_rate", "status", "comment",
-    "channel",
+    "channel", "shage_settled",
   ]) {
     if (key in body) updates[key] = body[key];
   }
@@ -64,6 +69,21 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
   // ─── Уведомления (для личных не отправится ничего) ───
   const profit = Number(data.profit_rub ?? 0);
   const name = esc(data.student_name);
+
+  if (isSettleToggle) {
+    const got = data.shage_settled === true;
+    const cnyEquiv = Number(data.atb_rate) > 0 ? profit / Number(data.atb_rate) : 0;
+    notifyDealEvent(
+      data.visibility,
+      session.telegramId,
+      (got ? `💰 <b>沙哥 перевёл нашу долю</b>\n\n` : `↩️ <b>Отметка снята</b>\n\n`) +
+        `👤 ${name}\n` +
+        `📈 ${fmtRub(profit)}` + (cnyEquiv > 0 ? ` · ≈ ${fmtCny(cnyEquiv)}` : "") + `\n` +
+        (got ? `` : `<i>Деньги снова числятся у него.</i>\n`) +
+        `\n<i>Отметил: ${esc(session.displayName)}</i>`,
+    ).catch(() => {});
+    return NextResponse.json(data);
+  }
 
   if (oldDeal.status !== data.status) {
     const info = statusInfo(data.status);

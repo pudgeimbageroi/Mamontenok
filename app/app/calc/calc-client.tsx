@@ -2,27 +2,18 @@
 
 import { useState, useCallback } from "react";
 import {
-  RefreshCw, AlertTriangle, TrendingUp, TrendingDown,
-  Coins, Banknote, ArrowLeftRight, Check,
-  Building2, Briefcase, UserRound, Pencil,
+  RefreshCw, AlertTriangle, TrendingUp, TrendingDown, Check, X,
+  Building2, Briefcase, UserRound, Coins, Banknote, ArrowLeftRight,
 } from "lucide-react";
 import { cn, formatRub, formatCny, formatRate } from "@/lib/utils";
 import {
-  computeMyRate,
-  effectiveAtbRate,
-  effectiveAtbIpRate,
-  effectiveShageRate,
-  baseRateByChannel,
-  profitPerYuan,
-  calcDealFromCny,
-  calcDealFromRub,
-  ATB_PREMIUM,
+  computeMyRate, effectiveAtbRate, effectiveAtbIpRate, effectiveShageRate,
+  baseRateByChannel, profitPerYuan, calcDealFromCny, calcDealFromRub, ATB_PREMIUM,
 } from "@/lib/calc";
 import { useDebouncedCallback } from "@/lib/use-debounced";
 import type { RateRow, MarkupSettings, Channel } from "@/lib/types";
 import { channelInfo } from "@/lib/channels";
-
-const MIN_PROFIT_WARNING = 5000;
+import { PageHeader, Panel, PanelHead, Num } from "@/components/ui/primitives";
 
 export function CalcClient({
   initialRates,
@@ -45,12 +36,11 @@ export function CalcClient({
   const atbIpRate = effectiveAtbIpRate(rates);
   const shageRate = effectiveShageRate(rates);
   const baseRate = baseRateByChannel(rates, channel);
-  const pPerYuan = profitPerYuan(rates, markup, channel);
+  const perYuan = profitPerYuan(rates, markup, channel);
   const dealCny = calcDealFromCny(amountCny, rates, markup, channel);
   const dealRub = calcDealFromRub(budgetRub, rates, markup, channel);
 
-  // Debounced save — UI обновляется мгновенно, сервер догоняет через 600мс
-  const saveRatesToServer = useCallback(async (next: RateRow) => {
+  const saveRates = useCallback(async (next: RateRow) => {
     try {
       await fetch("/api/rates", {
         method: "POST",
@@ -64,9 +54,9 @@ export function CalcClient({
           source: "manual",
         }),
       });
-    } catch (err) { console.error(err); }
+    } catch (e) { console.error(e); }
   }, []);
-  const debouncedSaveRates = useDebouncedCallback(saveRatesToServer, 600);
+  const debouncedSaveRates = useDebouncedCallback(saveRates, 600);
 
   const updateRates = useCallback((patch: Partial<RateRow>) => {
     setRates((prev) => {
@@ -76,619 +66,361 @@ export function CalcClient({
     });
   }, [debouncedSaveRates]);
 
-  /**
-   * Тянем два источника подряд.
-   * ЦБ (cbr-xml-daily) работает откуда угодно, АТБ может быть забанен по IP —
-   * поэтому ЦБ идёт первым: даже если банк не дастся, что-то обновится.
-   */
-  const refreshFromApi = async () => {
-    setRefreshing(true);
-    setRefreshError(null);
-
-    let gotSomething = false;
-    let atbFailed = "";
-
-    // 1. ЦБ
-    try {
-      const res = await fetch("/api/rates/cbr", { method: "POST" });
-      const data = await res.json();
-      if (res.ok) {
-        setRates((prev) => ({ ...prev, ...data }));
-        gotSomething = true;
-      }
-    } catch { /* молча — итог покажем ниже */ }
-
-    // 2. АТБ
-    try {
-      const res = await fetch("/api/rates/atb", { method: "POST" });
-      const data = await res.json();
-      if (res.ok) {
-        setRates((prev) => ({ ...prev, ...data }));
-        gotSomething = true;
-      } else {
-        atbFailed = data.error ?? "АТБ не ответил";
-      }
-    } catch (err) {
-      atbFailed = err instanceof Error ? err.message : "АТБ недоступен";
-    }
-
-    if (gotSomething) {
-      setRefreshedAt(Date.now());
-      setTimeout(() => setRefreshedAt(null), 3000);
-    }
-    if (atbFailed) setRefreshError(atbFailed);
-    if (!gotSomething && !atbFailed) setRefreshError("Не удалось обновить курсы");
-
-    setRefreshing(false);
-  };
-
-  const saveMarkupToServer = useCallback(async (patch: Partial<MarkupSettings>) => {
+  const saveMarkup = useCallback(async (patch: Partial<MarkupSettings>) => {
     try {
       await fetch("/api/markup", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(patch),
       });
-    } catch (err) { console.error(err); }
+    } catch (e) { console.error(e); }
   }, []);
-  const debouncedSaveMarkup = useDebouncedCallback(saveMarkupToServer, 600);
+  const debouncedSaveMarkup = useDebouncedCallback(saveMarkup, 600);
 
-  const updateMyRate = useCallback((value: number) => {
-    setMarkup((prev) => ({ ...prev, custom_rate_value: value, mode: "custom_rate" }));
-    debouncedSaveMarkup({ custom_rate_value: value, mode: "custom_rate" });
+  const updateMyRate = useCallback((v: number) => {
+    setMarkup((p) => ({ ...p, custom_rate_value: v, mode: "custom_rate" }));
+    debouncedSaveMarkup({ custom_rate_value: v, mode: "custom_rate" });
   }, [debouncedSaveMarkup]);
 
-  return (
-    <div className="space-y-8">
-      {/* Header */}
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-3xl lg:text-4xl font-display font-bold tracking-tight text-ink-900">
-            Калькулятор
-          </h1>
-          <p className="mt-2 text-ink-500">
-            Канал закупки, свой курс, расчёт прибыли с одной сделки
-          </p>
-        </div>
-        <button
-          onClick={refreshFromApi}
-          disabled={refreshing}
-          className={cn(
-            "inline-flex items-center gap-2 text-sm font-medium px-4 py-2.5 rounded-xl shadow-sm transition-all disabled:opacity-50",
-            refreshedAt
-              ? "bg-success-bg border border-success/30 text-success"
-              : "bg-white border border-ink-200 hover:border-brand-500 hover:text-brand-700",
-          )}
-        >
-          {refreshedAt ? (
-            <Check className="size-4" />
-          ) : (
-            <RefreshCw className={cn("size-4", refreshing && "animate-spin")} />
-          )}
-          {refreshing ? "Тяну курсы…" : refreshedAt ? "Обновлено" : "Обновить ЦБ + АТБ"}
-        </button>
-      </div>
+  /** ЦБ идёт первым: он тянется всегда, АТБ может быть забанен по IP */
+  async function refresh() {
+    setRefreshing(true);
+    setRefreshError(null);
+    let got = false;
+    let atbErr = "";
 
-      {/* Ошибка обновления — с подсказкой что делать */}
+    try {
+      const r = await fetch("/api/rates/cbr", { method: "POST" });
+      const d = await r.json();
+      if (r.ok) { setRates((p) => ({ ...p, ...d })); got = true; }
+    } catch { /* итог покажем ниже */ }
+
+    try {
+      const r = await fetch("/api/rates/atb", { method: "POST" });
+      const d = await r.json();
+      if (r.ok) { setRates((p) => ({ ...p, ...d })); got = true; }
+      else atbErr = d.error ?? "АТБ не ответил";
+    } catch (e) {
+      atbErr = e instanceof Error ? e.message : "АТБ недоступен";
+    }
+
+    if (got) { setRefreshedAt(Date.now()); setTimeout(() => setRefreshedAt(null), 2500); }
+    if (atbErr) setRefreshError(atbErr);
+    else if (!got) setRefreshError("Не удалось обновить курсы");
+    setRefreshing(false);
+  }
+
+  const chLabel = channelInfo(channel).shortLabel;
+
+  return (
+    <div>
+      <PageHeader
+        title="Калькулятор"
+        subtitle="Канал закупки, свой курс, расчёт одной сделки"
+        actions={
+          <button onClick={refresh} disabled={refreshing}
+            className={cn("btn", refreshedAt
+              ? "bg-success-bg text-success border border-success/30"
+              : "btn-ghost")}>
+            {refreshedAt ? <Check className="size-4" />
+              : <RefreshCw className={cn("size-4", refreshing && "animate-spin")} />}
+            {refreshing ? "Тяну курсы" : refreshedAt ? "Обновлено" : "Обновить ЦБ + АТБ"}
+          </button>
+        }
+      />
+
       {refreshError && (
-        <div className="bg-warning-bg border border-warning/30 rounded-2xl px-4 py-3 flex items-start gap-3">
+        <div className="mb-4 flex items-start gap-2.5 px-3.5 py-2.5 rounded-lg
+                        bg-warning-bg border border-warning/25">
           <AlertTriangle className="size-4 text-warning shrink-0 mt-0.5" />
-          <div className="text-sm min-w-0">
+          <div className="text-xs min-w-0 flex-1">
             <p className="font-medium text-warning">{refreshError}</p>
-            <p className="text-ink-600 mt-1">
-              Курс ЦБ обновился, АТБ — нет. Посмотри в приложении банка и впиши в поле
-              «АТБ (из приложения)» ниже, либо отправь боту <code className="bg-ink-100 px-1 rounded">/atb 13.06</code>
+            <p className="text-ink-500 mt-0.5">
+              Курс ЦБ обновился. АТБ впиши руками в поле ниже или отправь боту{" "}
+              <code className="num bg-ink-100 px-1 rounded">/atb 13.06</code>
             </p>
           </div>
-          <button
-            onClick={() => setRefreshError(null)}
-            className="text-ink-400 hover:text-ink-600 text-sm shrink-0"
-          >
-            ✕
+          <button onClick={() => setRefreshError(null)} aria-label="Скрыть предупреждение"
+            className="size-5 rounded flex items-center justify-center shrink-0
+                       text-ink-400 hover:text-ink-700 transition-colors">
+            <X className="size-3.5" />
           </button>
         </div>
       )}
 
-      {/* ─── КАНАЛ ЗАКУПКИ ─── */}
-      <section>
-        <h2 className="text-lg font-display font-semibold text-ink-900 mb-3 flex items-center gap-2">
-          <ArrowLeftRight className="size-5 text-brand-500" /> Канал закупки юаней
-        </h2>
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-          <ChannelCard
-            active={channel === "atb"}
-            onClick={() => setChannel("atb")}
-            icon={<Building2 className="size-5" />}
-            title="АТБ · физлицо"
-            sublabel="через приложение банка"
-            value={atbRate}
-            valueHint={`= ${formatRate(rates.atb_app_rate ?? 0)} + ${ATB_PREMIUM.toFixed(2)}`}
-          />
-          <ChannelCard
-            active={channel === "atb_ip"}
-            onClick={() => setChannel("atb_ip")}
-            icon={<Briefcase className="size-5" />}
-            title="АТБ · ИП"
-            sublabel="бизнес-приложение"
-            value={atbIpRate}
-            valueHint={atbIpRate > 0 ? "курс вписан вручную" : "впиши курс ниже ↓"}
-          />
-          <ChannelCard
-            active={channel === "shage"}
-            onClick={() => setChannel("shage")}
-            icon={<UserRound className="size-5" />}
-            title="沙哥"
-            sublabel="посредник"
-            value={shageRate}
-            valueHint={shageRate > 0 ? "курс вписан вручную" : "впиши курс ниже ↓"}
-          />
-        </div>
-
-        {/* Ручной ввод курса — для ИП и 沙哥 */}
-        {channel === "atb_ip" && (
-          <ManualRateInput
-            accent="emerald"
-            icon={<Briefcase className="size-4" />}
-            label="Курс АТБ на ИП"
-            value={rates.atb_ip_rate ?? 0}
-            onChange={(v) => updateRates({ atb_ip_rate: v })}
-            placeholder="13.0000"
-            hint="Посмотри в бизнес-приложении и впиши — премия +0.03 здесь не добавляется"
-          />
-        )}
-        {channel === "shage" && (
-          <ManualRateInput
-            accent="rose"
-            icon={<UserRound className="size-4" />}
-            label="Курс от 沙哥"
-            value={rates.shage_rate ?? 0}
-            onChange={(v) => updateRates({ shage_rate: v })}
-            placeholder="13.3000"
-            hint="Впиши курс который он назвал — это уже финальная себестоимость"
-          />
-        )}
-      </section>
-
-      {/* ─── КУРСЫ ─── */}
-      <section>
-        <h2 className="text-lg font-display font-semibold text-ink-900 mb-3 flex items-center gap-2">
-          <Coins className="size-5 text-brand-500" /> Актуальные курсы
-        </h2>
-
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-          <RateCard
-            label="Курс ЦБ РФ"
-            value={rates.cbr_rate ?? 0}
-            onChange={(v) => updateRates({ cbr_rate: v })}
-            hint="справочно"
-            currency="₽"
-          />
-          <RateCard
-            label="АТБ (из приложения)"
-            value={rates.atb_app_rate ?? 0}
-            onChange={(v) => updateRates({ atb_app_rate: v })}
-            hint="курс покупки ¥ в АТБ"
-            currency="₽"
-          />
-          <RateCardReadOnly
-            label="АТБ (фактический)"
-            value={atbRate}
-            hint={`формула: АТБ приложения + ${ATB_PREMIUM}`}
-            currency="₽"
-          />
-        </div>
-      </section>
-
-      {/* ─── МОЙ КУРС (единственный способ ценообразования) ─── */}
-      <section>
-        <h2 className="text-lg font-display font-semibold text-ink-900 mb-3 flex items-center gap-2">
-          <Pencil className="size-5 text-brand-500" /> Мой курс для студента
-        </h2>
-        <div className="bg-white border-2 border-brand-200 rounded-2xl p-5">
-          <div className="flex items-baseline gap-2">
-            <input
-              type="number"
-              step="0.0001"
-              value={markup.custom_rate_value || ""}
-              onChange={(e) => updateMyRate(parseFloat(e.target.value) || 0)}
-              className="font-display font-bold text-5xl text-brand-800 tabular-nums bg-transparent border-0 focus:outline-none focus:ring-0 p-0 max-w-full min-w-0 flex-1"
-              placeholder="13.5000"
-            />
-            <span className="font-display font-bold text-2xl text-ink-300 shrink-0">₽/¥</span>
-          </div>
-          <p className="text-xs text-ink-500 mt-2">
-            Ставим сами. Сохраняется автоматически и подставится в новую сделку.
-          </p>
-        </div>
-      </section>
-
-      {/* ─── HERO ─── */}
-      <section className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-brand-500 via-brand-600 to-brand-800 text-white p-8 shadow-xl">
-        <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,_rgba(255,255,255,0.15),_transparent_60%)]" />
-        <div className="relative flex flex-col lg:flex-row items-start lg:items-center justify-between gap-6">
-          <div>
-            <p className="text-xs font-medium uppercase tracking-widest text-brand-100 mb-2">
-              Мой курс · закупка через {channelInfo(channel).shortLabel}
-            </p>
-            <div className="flex items-baseline gap-3">
-              <span className="font-display font-bold text-6xl lg:text-7xl text-white tabular-nums tracking-tight">
-                {formatRate(myRate)}
-              </span>
-              <span className="font-display font-semibold text-2xl text-brand-100">₽ / ¥</span>
+      <div className="grid grid-cols-1 lg:grid-cols-[1fr_340px] gap-4 items-start">
+        <div className="space-y-4">
+          {/* ─── Канал закупки ─── */}
+          <Panel>
+            <PanelHead title="Канал закупки юаней" />
+            <div className="grid grid-cols-1 sm:grid-cols-3 divide-y sm:divide-y-0 sm:divide-x divide-line">
+              <ChannelCell active={channel === "atb"} onClick={() => setChannel("atb")}
+                Icon={Building2} title="АТБ · физлицо" value={atbRate}
+                hint={`${formatRate(rates.atb_app_rate ?? 0)} + ${ATB_PREMIUM.toFixed(2)}`} />
+              <ChannelCell active={channel === "atb_ip"} onClick={() => setChannel("atb_ip")}
+                Icon={Briefcase} title="АТБ · ИП" value={atbIpRate}
+                hint={atbIpRate > 0 ? "вручную" : "впиши курс"} />
+              <ChannelCell active={channel === "shage"} onClick={() => setChannel("shage")}
+                Icon={UserRound} title="沙哥" value={shageRate}
+                hint={shageRate > 0 ? "вручную" : "впиши курс"} />
             </div>
-          </div>
 
-          <div className="text-right">
-            <p className="text-xs font-medium uppercase tracking-widest text-brand-100 mb-2">
-              Прибыль с 1 ¥
-            </p>
-            <div className={cn(
-              "inline-flex items-center gap-2 font-display font-bold text-3xl lg:text-4xl tabular-nums",
-              pPerYuan >= 0 ? "text-white" : "text-red-200",
-            )}>
-              {pPerYuan >= 0
-                ? <TrendingUp className="size-7" />
-                : <TrendingDown className="size-7" />}
-              {pPerYuan >= 0 ? "+" : ""}{formatRate(pPerYuan)} ₽
-            </div>
-            {pPerYuan < 0 && (
-              <p className="text-xs text-red-200 font-medium mt-1">
-                ⚠ Мой курс ниже {channelInfo(channel).shortLabel} — убыток
-              </p>
+            {channel === "atb_ip" && (
+              <ManualRate label="Курс АТБ на ИП" value={rates.atb_ip_rate ?? 0}
+                onChange={(v) => updateRates({ atb_ip_rate: v })} placeholder="13.0000"
+                hint="Из бизнес-приложения. Премия +0.03 здесь не добавляется." />
             )}
-            <p className="text-[10px] text-brand-100 mt-1 tabular-nums opacity-80">
-              база: {formatRate(baseRate)} ₽
-            </p>
+            {channel === "shage" && (
+              <ManualRate label="Курс от 沙哥" value={rates.shage_rate ?? 0}
+                onChange={(v) => updateRates({ shage_rate: v })} placeholder="13.3000"
+                hint="Что назвал, то и есть — это уже финальная себестоимость." />
+            )}
+          </Panel>
+
+          {/* ─── Курсы ─── */}
+          <Panel>
+            <PanelHead title="Актуальные курсы" />
+            <div className="grid grid-cols-1 sm:grid-cols-3 divide-y sm:divide-y-0 sm:divide-x divide-line">
+              <RateCell label="Курс ЦБ РФ" value={rates.cbr_rate ?? 0}
+                onChange={(v) => updateRates({ cbr_rate: v })} hint="справочно" />
+              <RateCell label="АТБ из приложения" value={rates.atb_app_rate ?? 0}
+                onChange={(v) => updateRates({ atb_app_rate: v })} hint="курс покупки ¥" />
+              <RateCell label="АТБ фактический" value={atbRate} readOnly
+                hint={`+ ${ATB_PREMIUM} при списании`} />
+            </div>
+          </Panel>
+
+          {/* ─── Калькулятор сделки ─── */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <CalcBlock Icon={Coins} title="Есть сумма в ¥"
+              subtitle="Сколько брать с студента" inputLabel="К оплате в Китае"
+              suffix="¥" value={amountCny} onChange={setAmountCny} channel={chLabel}
+              rows={[
+                { l: "Студент платит", v: formatRub(dealCny.studentPaysRub), strong: true },
+                { l: `Уйдёт с ${chLabel}`, v: formatRub(dealCny.atbOutflowRub) },
+                { l: "Прибыль", v: formatRub(dealCny.profitRub), profit: true,
+                  sub: baseRate > 0 ? formatCny(dealCny.profitRub / baseRate) : undefined },
+                { l: "На одного неандертальца", v: formatRub(dealCny.shareRub), share: true,
+                  sub: baseRate > 0 ? formatCny(dealCny.shareRub / baseRate) : undefined },
+              ]}
+              profit={dealCny.profitRub} />
+
+            <CalcBlock Icon={Banknote} title="Есть бюджет в ₽"
+              subtitle="Сколько ¥ получит студент" inputLabel="Бюджет"
+              suffix="₽" value={budgetRub} onChange={setBudgetRub} channel={chLabel}
+              rows={[
+                { l: "Получит юаней", v: formatCny(dealRub.amountCny), strong: true },
+                { l: `Уйдёт с ${chLabel}`, v: formatRub(dealRub.atbOutflowRub) },
+                { l: "Прибыль", v: formatRub(dealRub.profitRub), profit: true,
+                  sub: baseRate > 0 ? formatCny(dealRub.profitRub / baseRate) : undefined },
+                { l: "На одного неандертальца", v: formatRub(dealRub.shareRub), share: true,
+                  sub: baseRate > 0 ? formatCny(dealRub.shareRub / baseRate) : undefined },
+              ]}
+              profit={dealRub.profitRub} />
           </div>
         </div>
-      </section>
 
-      {/* ─── КАЛЬКУЛЯТОР СДЕЛКИ ─── */}
-      <section>
-        <h2 className="text-lg font-display font-semibold text-ink-900 mb-3 flex items-center gap-2">
-          <ArrowLeftRight className="size-5 text-brand-500" /> Калькулятор сделки
-        </h2>
+        {/* ─── Правая колонка: цена и итог ─── */}
+        <div className="space-y-4 lg:sticky lg:top-6">
+          <Panel>
+            <PanelHead title="Мой курс для студента" />
+            <div className="px-4 py-4">
+              <div className="flex items-baseline gap-1.5">
+                <input type="number" step="0.0001"
+                  value={markup.custom_rate_value || ""}
+                  onChange={(e) => updateMyRate(parseFloat(e.target.value) || 0)}
+                  placeholder="13.5000"
+                  className="num font-display font-bold text-4xl text-brand-700 bg-transparent
+                             border-0 p-0 flex-1 min-w-0 focus:outline-none focus:ring-0
+                             placeholder:text-ink-300" />
+                <span className="font-display font-semibold text-lg text-ink-400">₽/¥</span>
+              </div>
+              <p className="text-2xs text-ink-400 mt-2">
+                Сохраняется автоматически и подставится в новую сделку
+              </p>
+            </div>
+          </Panel>
 
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          <CalcBlock
-            accent="amber"
-            icon={<Coins className="size-5" />}
-            title="Есть сумма в ¥"
-            subtitle="Сколько брать с студента в ₽?"
-            inputLabel="Сумма к оплате в Китае"
-            inputValue={amountCny}
-            inputSuffix="¥"
-            onInputChange={setAmountCny}
-            channelLabel={channelInfo(channel).shortLabel}
-            rows={[
-              { label: "Студент платит", value: formatRub(dealCny.studentPaysRub), highlight: true },
-              { label: `Уйдёт с ${channelInfo(channel).shortLabel}`, value: formatRub(dealCny.atbOutflowRub) },
-              {
-                label: "Прибыль",
-                value: formatRub(dealCny.profitRub),
-                subvalue: baseRate > 0 ? `≈ ${formatCny(dealCny.profitRub / baseRate)}` : undefined,
-                isProfit: true,
-              },
-              {
-                label: "На одного неандертальца",
-                value: formatRub(dealCny.shareRub),
-                subvalue: baseRate > 0 ? `≈ ${formatCny(dealCny.shareRub / baseRate)}` : undefined,
-                isShare: true,
-              },
-            ]}
-            profit={dealCny.profitRub}
-          />
-
-          <CalcBlock
-            accent="brand"
-            icon={<Banknote className="size-5" />}
-            title="Есть бюджет в ₽"
-            subtitle="Сколько ¥ получит студент?"
-            inputLabel="Бюджет в рублях"
-            inputValue={budgetRub}
-            inputSuffix="₽"
-            onInputChange={setBudgetRub}
-            channelLabel={channelInfo(channel).shortLabel}
-            rows={[
-              { label: "Получит юаней", value: formatCny(dealRub.amountCny), highlight: true },
-              { label: `Уйдёт с ${channelInfo(channel).shortLabel}`, value: formatRub(dealRub.atbOutflowRub) },
-              {
-                label: "Прибыль",
-                value: formatRub(dealRub.profitRub),
-                subvalue: baseRate > 0 ? `≈ ${formatCny(dealRub.profitRub / baseRate)}` : undefined,
-                isProfit: true,
-              },
-              {
-                label: "На одного неандертальца",
-                value: formatRub(dealRub.shareRub),
-                subvalue: baseRate > 0 ? `≈ ${formatCny(dealRub.shareRub / baseRate)}` : undefined,
-                isShare: true,
-              },
-            ]}
-            profit={dealRub.profitRub}
-          />
+          {/* Итог. Заливка акцентом — единственное цветное пятно на экране */}
+          <div className="rounded-xl bg-brand-solid text-white overflow-hidden">
+            <div className="px-4 py-3.5 border-b border-white/15">
+              <div className="text-2xs font-medium uppercase tracking-micro text-white/70">
+                Закупка через {chLabel}
+              </div>
+              <div className="flex items-baseline gap-1.5 mt-1">
+                <span className="num font-display font-bold text-3xl">{formatRate(myRate)}</span>
+                <span className="font-display font-semibold text-sm text-white/70">₽/¥</span>
+              </div>
+            </div>
+            <div className="px-4 py-3.5">
+              <div className="text-2xs font-medium uppercase tracking-micro text-white/70">
+                Прибыль с 1 ¥
+              </div>
+              <div className="flex items-center gap-1.5 mt-1">
+                {perYuan >= 0 ? <TrendingUp className="size-5" /> : <TrendingDown className="size-5" />}
+                <span className="num font-display font-bold text-2xl">
+                  {perYuan >= 0 ? "+" : ""}{formatRate(perYuan)} ₽
+                </span>
+              </div>
+              <div className="text-2xs text-white/60 num mt-1.5">
+                база: {formatRate(baseRate)} ₽
+              </div>
+              {perYuan < 0 && (
+                <div className="mt-2.5 text-2xs bg-white/15 rounded px-2 py-1.5">
+                  Курс ниже {chLabel} — сделка в убыток
+                </div>
+              )}
+            </div>
+          </div>
         </div>
-      </section>
+      </div>
     </div>
   );
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// Ручной ввод курса (для ИП и 沙哥)
-// ═══════════════════════════════════════════════════════════════════
-function ManualRateInput({
-  accent, icon, label, value, onChange, placeholder, hint,
+function ChannelCell({
+  active, onClick, Icon, title, value, hint,
 }: {
-  accent: "emerald" | "rose";
-  icon: React.ReactNode;
-  label: string;
-  value: number;
-  onChange: (v: number) => void;
-  placeholder: string;
-  hint: string;
-}) {
-  const styles = {
-    emerald: { border: "border-emerald-200", icon: "text-emerald-600", text: "text-emerald-700" },
-    rose: { border: "border-rose-200", icon: "text-rose-600", text: "text-rose-700" },
-  }[accent];
-
-  return (
-    <div className={cn("mt-3 bg-white border-2 rounded-2xl p-5", styles.border)}>
-      <div className="flex items-center gap-2 mb-3">
-        <span className={styles.icon}>{icon}</span>
-        <p className="text-xs uppercase tracking-wider text-ink-500 font-medium">{label}</p>
-      </div>
-      <div className="flex items-baseline gap-1.5">
-        <input
-          type="number"
-          step="0.0001"
-          value={value || ""}
-          onChange={(e) => onChange(parseFloat(e.target.value) || 0)}
-          className={cn(
-            "font-display font-bold text-4xl tabular-nums bg-transparent border-0 focus:outline-none focus:ring-0 p-0 max-w-full min-w-0 flex-1",
-            styles.text,
-          )}
-          placeholder={placeholder}
-        />
-        <span className="font-display font-bold text-xl text-ink-300 shrink-0">₽/¥</span>
-      </div>
-      <p className="text-xs text-ink-500 mt-2">{hint}</p>
-    </div>
-  );
-}
-
-// ═══════════════════════════════════════════════════════════════════
-// КАРТОЧКА КАНАЛА
-// ═══════════════════════════════════════════════════════════════════
-function ChannelCard({
-  active, onClick, icon, title, sublabel, value, valueHint,
-}: {
-  active: boolean;
-  onClick: () => void;
-  icon: React.ReactNode;
-  title: string;
-  sublabel: string;
-  value: number;
-  valueHint: string;
+  active: boolean; onClick: () => void;
+  Icon: typeof Building2; title: string; value: number; hint: string;
 }) {
   return (
-    <button
-      onClick={onClick}
-      className={cn(
-        "text-left bg-white border-2 rounded-2xl p-5 transition-all",
-        active
-          ? "border-brand-500 ring-4 ring-brand-100 shadow-md"
-          : "border-ink-200 hover:border-ink-300",
-      )}
-    >
-      <div className="flex items-start justify-between gap-2 mb-2">
-        <div className="flex items-center gap-2 min-w-0">
-          <div className={cn(
-            "size-9 rounded-xl flex items-center justify-center shrink-0",
-            active ? "bg-brand-500 text-white" : "bg-ink-100 text-ink-500",
-          )}>
-            {icon}
-          </div>
-          <div className="min-w-0">
-            <p className="text-sm font-display font-bold text-ink-900 truncate">{title}</p>
-            <p className="text-xs text-ink-500 truncate">{sublabel}</p>
-          </div>
-        </div>
-        <div className={cn(
-          "size-5 rounded-full border-2 flex items-center justify-center transition-colors shrink-0",
-          active ? "border-brand-500 bg-brand-500" : "border-ink-300",
-        )}>
-          {active && <div className="size-2 bg-white rounded-full" />}
-        </div>
-      </div>
-      <div className="flex items-baseline gap-1.5 mt-3">
-        <span className="font-display font-bold text-3xl text-brand-800 tabular-nums">
-          {value > 0 ? formatRate(value) : "—"}
-        </span>
-        <span className="font-display font-bold text-lg text-ink-300">₽/¥</span>
-      </div>
-      <p className="text-[11px] text-ink-500 mt-1 tabular-nums">{valueHint}</p>
+    <button onClick={onClick}
+      className={cn("text-left px-4 py-3.5 transition-colors relative",
+        active ? "bg-brand-50" : "hover:bg-ink-100/60")}>
+      {active && <span className="absolute inset-x-0 top-0 h-0.5 bg-brand-500" />}
+      <span className="flex items-center gap-2 mb-2">
+        <Icon className={cn("size-4 shrink-0", active ? "text-brand-700" : "text-ink-400")} />
+        <span className={cn("text-xs font-medium truncate",
+          active ? "text-brand-800" : "text-ink-700")}>{title}</span>
+      </span>
+      <Num value={value > 0 ? formatRate(value) : "—"} unit="₽/¥" size="lg"
+        tone={active ? "brand" : "default"} />
+      <span className="text-2xs text-ink-400 num mt-0.5 truncate">{hint}</span>
     </button>
   );
 }
 
-// ═══════════════════════════════════════════════════════════════════
-// КАРТОЧКА КУРСА — input
-// ═══════════════════════════════════════════════════════════════════
-function RateCard({
-  label, value, onChange, hint, currency,
+function RateCell({
+  label, value, onChange, hint, readOnly,
 }: {
-  label: string; value: number; onChange: (v: number) => void; hint: string; currency: string;
+  label: string; value: number; hint: string;
+  onChange?: (v: number) => void; readOnly?: boolean;
 }) {
   return (
-    <div className="group bg-white border border-ink-200 hover:border-brand-300 rounded-2xl p-5 transition-colors">
-      <p className="text-xs uppercase tracking-wider text-ink-500 font-medium mb-3">{label}</p>
-      <div className="flex items-baseline gap-1.5">
-        <input
-          type="number"
-          step="0.0001"
-          value={value || ""}
+    <div className="px-4 py-3.5">
+      <div className="label-micro">{label}</div>
+      <div className="flex items-baseline gap-1 mt-1.5">
+        {readOnly ? (
+          <Num value={formatRate(value)} size="lg" />
+        ) : (
+          <input type="number" step="0.0001" value={value || ""}
+            onChange={(e) => onChange?.(parseFloat(e.target.value) || 0)}
+            placeholder="0.0000"
+            className="num font-display font-semibold text-lg text-ink-900 bg-transparent
+                       border-0 p-0 w-full min-w-0 focus:outline-none focus:ring-0
+                       placeholder:text-ink-300" />
+        )}
+        <span className="text-sm text-ink-400 shrink-0">₽</span>
+      </div>
+      <div className="text-2xs text-ink-400 mt-0.5">{hint}</div>
+    </div>
+  );
+}
+
+function ManualRate({
+  label, value, onChange, placeholder, hint,
+}: {
+  label: string; value: number; onChange: (v: number) => void;
+  placeholder: string; hint: string;
+}) {
+  return (
+    <div className="px-4 py-3.5 border-t border-line bg-brand-50/40">
+      <div className="label-micro">{label}</div>
+      <div className="flex items-baseline gap-1.5 mt-1.5">
+        <input type="number" step="0.0001" value={value || ""}
           onChange={(e) => onChange(parseFloat(e.target.value) || 0)}
-          className="font-display font-bold text-3xl text-brand-800 tabular-nums bg-transparent border-0 focus:outline-none focus:ring-0 p-0 max-w-full min-w-0 flex-1"
-          placeholder="0.0000"
-        />
-        <span className="font-display font-bold text-xl text-ink-300 group-hover:text-brand-400 transition-colors">{currency}</span>
+          placeholder={placeholder}
+          className="num font-display font-bold text-2xl text-brand-700 bg-transparent
+                     border-0 p-0 flex-1 min-w-0 focus:outline-none focus:ring-0
+                     placeholder:text-ink-300" />
+        <span className="font-display font-semibold text-sm text-ink-400">₽/¥</span>
       </div>
-      <p className="text-xs text-ink-500 mt-2">{hint}</p>
+      <p className="text-2xs text-ink-500 mt-1">{hint}</p>
     </div>
   );
 }
 
-// ═══════════════════════════════════════════════════════════════════
-// КАРТОЧКА КУРСА — read-only
-// ═══════════════════════════════════════════════════════════════════
-function RateCardReadOnly({
-  label, value, hint, currency,
-}: {
-  label: string; value: number; hint: string; currency: string;
-}) {
-  return (
-    <div className="relative bg-ink-50 border border-ink-200 rounded-2xl p-5">
-      <div className="absolute top-3 right-3 text-xs px-2 py-0.5 rounded-md bg-brand-50 text-brand-700 font-medium">
-        авто
-      </div>
-      <p className="text-xs uppercase tracking-wider text-ink-500 font-medium mb-3">{label}</p>
-      <div className="flex items-baseline gap-1.5">
-        <span className="font-display font-bold text-3xl text-ink-700 tabular-nums">
-          {formatRate(value)}
-        </span>
-        <span className="font-display font-bold text-xl text-ink-300">{currency}</span>
-      </div>
-      <p className="text-xs text-ink-500 mt-2">{hint}</p>
-    </div>
-  );
-}
-
-// ═══════════════════════════════════════════════════════════════════
-// БЛОК КАЛЬКУЛЯТОРА СДЕЛКИ
-// ═══════════════════════════════════════════════════════════════════
-type Row = { label: string; value: string; subvalue?: string; highlight?: boolean; isProfit?: boolean; isShare?: boolean };
+type CalcRow = { l: string; v: string; sub?: string; strong?: boolean; profit?: boolean; share?: boolean };
 
 function CalcBlock({
-  accent, icon, title, subtitle, inputLabel, inputSuffix, inputValue, onInputChange, rows, profit, channelLabel,
+  Icon, title, subtitle, inputLabel, suffix, value, onChange, rows, profit, channel,
 }: {
-  accent: "amber" | "brand";
-  icon: React.ReactNode;
-  title: string;
-  subtitle: string;
-  inputLabel: string;
-  inputSuffix: string;
-  inputValue: number;
-  onInputChange: (v: number) => void;
-  rows: Row[];
-  profit: number;
-  channelLabel: string;
+  Icon: typeof Coins; title: string; subtitle: string; inputLabel: string;
+  suffix: string; value: number; onChange: (v: number) => void;
+  rows: CalcRow[]; profit: number; channel: string;
 }) {
-  const lowProfit = profit > 0 && profit < MIN_PROFIT_WARNING;
   const loss = profit < 0;
 
-  const accentStyles = {
-    amber: {
-      headBg: "bg-gradient-to-br from-amber-50 to-amber-100",
-      headBorder: "border-amber-200",
-      iconBg: "bg-amber-500 text-white",
-      titleColor: "text-amber-900",
-      inputFocus: "focus:border-amber-500 focus:ring-amber-200",
-    },
-    brand: {
-      headBg: "bg-gradient-to-br from-brand-50 to-brand-100",
-      headBorder: "border-brand-200",
-      iconBg: "bg-brand-500 text-white",
-      titleColor: "text-brand-900",
-      inputFocus: "focus:border-brand-500 focus:ring-brand-200",
-    },
-  }[accent];
-
   return (
-    <div className="bg-white border border-ink-200 rounded-2xl overflow-hidden shadow-sm">
-      {/* Header */}
-      <div className={cn("flex items-center gap-3 px-5 py-4 border-b", accentStyles.headBg, accentStyles.headBorder)}>
-        <div className={cn("size-10 rounded-xl flex items-center justify-center shrink-0", accentStyles.iconBg)}>
-          {icon}
-        </div>
-        <div className="flex-1 min-w-0">
-          <p className={cn("text-sm font-display font-bold", accentStyles.titleColor)}>{title}</p>
-          <p className="text-xs text-ink-500">{subtitle}</p>
-        </div>
-        <span className="text-[10px] font-medium bg-white/80 backdrop-blur px-2 py-1 rounded-md text-ink-700 border border-white shrink-0">
-          {channelLabel}
-        </span>
-      </div>
-
-      {/* Body */}
-      <div className="p-5 space-y-4">
-        <div>
-          <label className="text-xs uppercase tracking-wider text-ink-500 font-medium">
-            {inputLabel}
-          </label>
-          <div className="flex items-baseline gap-2 mt-1.5">
-            <input
-              type="number"
-              value={inputValue || ""}
-              onChange={(e) => onInputChange(parseFloat(e.target.value) || 0)}
-              className={cn(
-                "font-display font-bold text-4xl text-ink-900 tabular-nums bg-input-bg border-2 border-ink-200 rounded-xl px-4 py-2 w-full focus:outline-none focus:ring-4 transition-all",
-                accentStyles.inputFocus,
-              )}
-            />
-            <span className="font-display font-bold text-2xl text-ink-400">{inputSuffix}</span>
+    <Panel>
+      <div className="panel-head">
+        <div className="flex items-center gap-2 min-w-0">
+          <Icon className="size-4 text-ink-400 shrink-0" />
+          <div className="min-w-0">
+            <div className="text-xs font-medium text-ink-900 truncate">{title}</div>
+            <div className="text-2xs text-ink-400 truncate">{subtitle}</div>
           </div>
         </div>
+        <Tag>{channel}</Tag>
+      </div>
 
-        <div className="border-t border-ink-100 pt-3 space-y-2.5">
-          {rows.map((row) => (
-            <div key={row.label} className="flex items-baseline justify-between gap-3">
-              <span className={cn(
-                "text-sm",
-                row.highlight || row.isShare ? "font-semibold text-ink-900" : "text-ink-500",
-                row.isShare && "flex items-center gap-1.5",
-              )}>
-                {row.isShare && <span className="text-xs">🪨</span>}
-                {row.label}
-              </span>
-              <div className="text-right">
-                <div className={cn(
-                  "font-display tabular-nums",
-                  row.isProfit && profit >= MIN_PROFIT_WARNING && "font-bold text-success text-lg",
-                  row.isProfit && lowProfit && "font-bold text-warning text-lg",
-                  row.isProfit && loss && "font-bold text-danger text-lg",
-                  row.isShare && "font-bold text-brand-800 text-lg",
-                  !row.isProfit && !row.isShare && row.highlight && "font-semibold text-ink-900 text-base",
-                  !row.isProfit && !row.isShare && !row.highlight && "text-ink-700",
-                )}>
-                  {row.value}
-                </div>
-                {row.subvalue && (
-                  <div className="text-xs text-ink-500 tabular-nums mt-0.5">
-                    {row.subvalue}
-                  </div>
-                )}
-              </div>
-            </div>
-          ))}
+      <div className="px-4 py-3.5 border-b border-line">
+        <label className="label-micro">{inputLabel}</label>
+        <div className="flex items-baseline gap-2 mt-1.5">
+          <input type="number" value={value || ""}
+            onChange={(e) => onChange(parseFloat(e.target.value) || 0)}
+            className="num font-display font-bold text-2xl text-ink-900 bg-input-bg
+                       border border-line-strong rounded-lg px-3 py-1.5 w-full min-w-0
+                       focus:outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/25
+                       transition-all" />
+          <span className="font-display font-semibold text-lg text-ink-400">{suffix}</span>
         </div>
+      </div>
 
-        {(lowProfit || loss) && (
-          <div className={cn(
-            "flex items-start gap-2 px-3 py-2.5 rounded-xl text-sm border",
-            loss
-              ? "bg-danger-bg border-danger/30 text-danger"
-              : "bg-warning-bg border-warning/30 text-warning",
-          )}>
-            <AlertTriangle className="size-4 shrink-0 mt-0.5" />
-            <span className="font-medium">
-              {loss
-                ? "Убыточная сделка — пересмотри курс"
-                : "注意: прибыль < 5 000 ₽"}
+      <div className="px-4 py-3 space-y-2">
+        {rows.map((r) => (
+          <div key={r.l} className="flex items-baseline justify-between gap-3">
+            <span className={cn("text-xs", r.strong || r.share ? "text-ink-900" : "text-ink-500")}>
+              {r.l}
             </span>
+            <div className="text-right">
+              <Num value={r.v} size={r.profit || r.share ? "md" : "sm"}
+                tone={r.profit
+                  ? (loss ? "danger" : "success")
+                  : r.share ? "brand" : "default"} />
+              {r.sub && <div className="text-2xs text-ink-400 num">≈ {r.sub}</div>}
+            </div>
           </div>
-        )}
+        ))}
       </div>
-    </div>
+
+      {loss && (
+        <div className="flex items-center gap-2 px-4 py-2.5 text-xs border-t
+                        bg-danger-bg border-danger/20 text-danger">
+          <AlertTriangle className="size-3.5 shrink-0" />
+          <span className="font-medium">Убыточная сделка — пересмотри курс</span>
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+function Tag({ children }: { children: React.ReactNode }) {
+  return (
+    <span className="text-2xs font-medium px-1.5 py-0.5 rounded border border-line-strong text-ink-500 shrink-0">
+      {children}
+    </span>
   );
 }

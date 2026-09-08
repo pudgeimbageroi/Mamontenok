@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { AlertTriangle } from "lucide-react";
 
 interface TelegramWebApp {
   initData: string;
@@ -37,8 +38,12 @@ export function TelegramBootstrap({ redirectTo = "/app" }: { redirectTo?: string
     tg.ready();
     tg.expand();
     tg.disableVerticalSwipes?.();
-    tg.setHeaderColor?.("#0883FF");
-    tg.setBackgroundColor?.("#F8FAFC");
+
+    // Цвета шапки Telegram подстраиваем под тему приложения,
+    // иначе в тёмном интерфейсе сверху остаётся светлая полоса
+    const dark = document.documentElement.classList.contains("dark");
+    tg.setHeaderColor?.(dark ? "#0E141C" : "#FFFFFF");
+    tg.setBackgroundColor?.(dark ? "#080C12" : "#F6F8FB");
 
     setStatus("auth");
     fetch("/api/auth/tg-webapp", {
@@ -56,10 +61,13 @@ export function TelegramBootstrap({ redirectTo = "/app" }: { redirectTo?: string
 
   if (status === "auth") {
     return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-white">
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink-50">
         <div className="text-center">
-          <div className="text-5xl mb-3 animate-bounce">🦣</div>
-          <p className="font-display font-semibold text-ink-900">Входим…</p>
+          <div className="size-12 rounded-xl bg-brand-solid text-white flex items-center justify-center
+                          font-display font-bold text-2xl mx-auto mb-3 animate-pulse">
+            М
+          </div>
+          <p className="font-display font-semibold text-ink-900">Входим</p>
         </div>
       </div>
     );
@@ -67,11 +75,16 @@ export function TelegramBootstrap({ redirectTo = "/app" }: { redirectTo?: string
 
   if (status === "error") {
     return (
-      <div className="fixed inset-0 z-50 flex items-center justify-center bg-white p-6">
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink-50 p-6">
         <div className="text-center max-w-sm">
-          <div className="text-5xl mb-3">😵</div>
+          <div className="size-12 rounded-xl bg-danger-bg text-danger flex items-center justify-center mx-auto mb-3">
+            <AlertTriangle className="size-6" />
+          </div>
           <p className="font-display font-semibold text-ink-900 mb-2">Не получилось войти</p>
-          <p className="text-sm text-ink-500">Если ты в списке доверенных — попробуй переоткрыть Mini App. Если нет — стукни Семёну.</p>
+          <p className="text-sm text-ink-500">
+            Если ты в списке доверенных — попробуй переоткрыть Mini App.
+            Если нет — напиши Семёну.
+          </p>
         </div>
       </div>
     );

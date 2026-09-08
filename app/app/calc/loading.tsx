@@ -1,19 +1,22 @@
-import { Skeleton, CardSkeleton } from "@/components/skeleton";
+import { Skeleton, HeaderSkeleton } from "@/components/skeleton";
 
 export default function CalcLoading() {
   return (
-    <div className="space-y-8">
-      <Skeleton className="h-10 w-48" />
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-        <CardSkeleton /><CardSkeleton /><CardSkeleton />
-      </div>
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <CardSkeleton /><CardSkeleton />
-      </div>
-      <Skeleton className="h-32 rounded-3xl" />
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <Skeleton className="h-72 rounded-2xl" />
-        <Skeleton className="h-72 rounded-2xl" />
+    <div>
+      <HeaderSkeleton />
+      <div className="grid grid-cols-1 lg:grid-cols-[1fr_340px] gap-4 items-start">
+        <div className="space-y-4">
+          <Skeleton className="h-[150px] rounded-xl" />
+          <Skeleton className="h-[130px] rounded-xl" />
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <Skeleton className="h-[290px] rounded-xl" />
+            <Skeleton className="h-[290px] rounded-xl" />
+          </div>
+        </div>
+        <div className="space-y-4">
+          <Skeleton className="h-[130px] rounded-xl" />
+          <Skeleton className="h-[190px] rounded-xl" />
+        </div>
       </div>
     </div>
   );

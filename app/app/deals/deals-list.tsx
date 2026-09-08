@@ -1,62 +1,61 @@
 "use client";
 
 import { useMemo, useState, useCallback } from "react";
+import { useRouter } from "next/navigation";
 import Link from "next/link";
 import {
-  Plus, Search, ChevronRight, SlidersHorizontal, X,
-  Calendar, TrendingUp, Receipt, Wallet, Lock,
+  Plus, Search, X, Calendar, ClipboardList, Lock,
+  TrendingUp, TrendingDown, Clock, Check, Undo2, UserRound,
+  Download, Copy, CheckSquare, Square,
 } from "lucide-react";
-import { cn, formatRub, formatCny, formatDate } from "@/lib/utils";
-import { DEAL_STATUSES, statusInfo, type DealStatus } from "@/lib/deal-statuses";
+import { cn, formatRub, formatCny, plural } from "@/lib/utils";
 import type { Deal, Channel } from "@/lib/types";
 import { CHANNELS, channelInfo } from "@/lib/channels";
 import type { ViewMode } from "@/lib/visibility";
+import {
+  PageHeader, Panel, Num, StatStrip, Sparkline, Tag, EmptyState, type Metric,
+} from "@/components/ui/primitives";
+import { DealDialog } from "@/components/deal-dialog";
 
-// ═══════════════════════════════════════════════════════════════════
-// ПЕРИОДЫ
-// ═══════════════════════════════════════════════════════════════════
-type PeriodPreset =
-  | "all"
-  | "this_month"
-  | "last_month"
-  | "this_quarter"
-  | "this_year"
-  | "custom";
+const MONTHS = ["янв", "фев", "мар", "апр", "май", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"];
+const MONTHS_FULL = ["Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
+  "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"];
+
+type PeriodPreset = "all" | "this_month" | "last_month" | "this_quarter" | "this_year" | "custom";
 
 const PERIOD_LABELS: Record<PeriodPreset, string> = {
-  all: "Всё время",
   this_month: "Этот месяц",
-  last_month: "Прошлый месяц",
-  this_quarter: "Этот квартал",
-  this_year: "Этот год",
+  last_month: "Прошлый",
+  this_quarter: "Квартал",
+  this_year: "Год",
+  all: "Всё время",
   custom: "Свои даты",
 };
+const PERIOD_ORDER: PeriodPreset[] = ["this_month", "last_month", "this_quarter", "this_year", "all", "custom"];
 
-/** Возвращает [from, to] в формате YYYY-MM-DD или null если без ограничений */
-function resolvePeriod(preset: PeriodPreset, customFrom: string, customTo: string): [string, string] | null {
+function resolvePeriod(p: PeriodPreset, from: string, to: string): [string, string] | null {
   const now = new Date();
   const y = now.getFullYear();
   const m = now.getMonth();
   const iso = (d: Date) => d.toISOString().slice(0, 10);
-
-  switch (preset) {
-    case "this_month":
-      return [iso(new Date(y, m, 1)), iso(new Date(y, m + 1, 0))];
-    case "last_month":
-      return [iso(new Date(y, m - 1, 1)), iso(new Date(y, m, 0))];
+  switch (p) {
+    case "this_month": return [iso(new Date(y, m, 1)), iso(new Date(y, m + 1, 0))];
+    case "last_month": return [iso(new Date(y, m - 1, 1)), iso(new Date(y, m, 0))];
     case "this_quarter": {
-      const qStart = Math.floor(m / 3) * 3;
-      return [iso(new Date(y, qStart, 1)), iso(new Date(y, qStart + 3, 0))];
+      const q = Math.floor(m / 3) * 3;
+      return [iso(new Date(y, q, 1)), iso(new Date(y, q + 3, 0))];
     }
-    case "this_year":
-      return [iso(new Date(y, 0, 1)), iso(new Date(y, 11, 31))];
+    case "this_year": return [iso(new Date(y, 0, 1)), iso(new Date(y, 11, 31))];
     case "custom":
-      if (!customFrom && !customTo) return null;
-      return [customFrom || "1900-01-01", customTo || "2999-12-31"];
-    case "all":
-    default:
-      return null;
+      if (!from && !to) return null;
+      return [from || "1900-01-01", to || "2999-12-31"];
+    default: return null;
   }
+}
+
+/** Долг посредника в юанях по курсу сделки */
+function shageDebtCny(d: Deal): number {
+  return d.atb_rate > 0 ? (d.profit_rub ?? 0) / d.atb_rate : 0;
 }
 
 export function DealsList({
@@ -66,518 +65,614 @@ export function DealsList({
   initialDeals: Deal[];
   mode?: ViewMode;
 }) {
-  const [deals] = useState(initialDeals);
+  const router = useRouter();
+  const [deals, setDeals] = useState(initialDeals);
 
-  // ── Фильтры
-  const [statusFilter, setStatusFilter] = useState<DealStatus | "all">("all");
   const [search, setSearch] = useState("");
   const [period, setPeriod] = useState<PeriodPreset>("all");
   const [customFrom, setCustomFrom] = useState("");
   const [customTo, setCustomTo] = useState("");
-  const [purposeFilter, setPurposeFilter] = useState<string>("all");
   const [channelFilter, setChannelFilter] = useState<Channel | "all">("all");
-  const [universityFilter, setUniversityFilter] = useState<string>("all");
-  const [cityFilter, setCityFilter] = useState<string>("all");
-  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [universityFilter, setUniversityFilter] = useState("all");
+  /** Показывать только те, где 沙哥 ещё не рассчитался */
+  const [pendingOnly, setPendingOnly] = useState(false);
+  /** id сделок, по которым сейчас идёт запрос — чтобы не жать дважды */
+  const [busy, setBusy] = useState<Set<string>>(new Set());
+  /** Выделенные для массового действия */
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [bulkRunning, setBulkRunning] = useState(false);
+  /** Сделка, открытая в поп-апе */
+  const [popup, setPopup] = useState<Deal | null>(null);
 
-  // ── Уникальные значения для выпадашек (из реальных данных)
-  const options = useMemo(() => {
-    const uniq = (arr: (string | null)[]) =>
-      Array.from(new Set(arr.filter((v): v is string => !!v && v.trim() !== ""))).sort();
-    return {
-      purposes: uniq(deals.map((d) => d.purpose)),
-      universities: uniq(deals.map((d) => d.university)),
-      cities: uniq(deals.map((d) => d.city)),
-    };
+  const universities = useMemo(() => {
+    const set = new Set(deals.map((d) => d.university).filter((v): v is string => !!v?.trim()));
+    return Array.from(set).sort();
   }, [deals]);
 
-  // ── Применение фильтров
+  const shagePending = useMemo(
+    () => deals.filter((d) => d.channel === "shage" && d.shage_settled === false),
+    [deals],
+  );
+  const pendingRub = shagePending.reduce((s, d) => s + (d.profit_rub ?? 0), 0);
+  const pendingCny = shagePending.reduce((s, d) => s + shageDebtCny(d), 0);
+
   const filtered = useMemo(() => {
     const range = resolvePeriod(period, customFrom, customTo);
     return deals.filter((d) => {
-      if (statusFilter !== "all" && d.status !== statusFilter) return false;
       if (search && !d.student_name.toLowerCase().includes(search.toLowerCase())) return false;
-      if (range) {
-        if (d.date < range[0] || d.date > range[1]) return false;
-      }
-      if (purposeFilter !== "all" && d.purpose !== purposeFilter) return false;
+      if (range && (d.date < range[0] || d.date > range[1])) return false;
       if (channelFilter !== "all" && (d.channel ?? "atb") !== channelFilter) return false;
       if (universityFilter !== "all" && d.university !== universityFilter) return false;
-      if (cityFilter !== "all" && d.city !== cityFilter) return false;
+      if (pendingOnly && !(d.channel === "shage" && d.shage_settled === false)) return false;
       return true;
     });
-  }, [deals, statusFilter, search, period, customFrom, customTo, purposeFilter, channelFilter, universityFilter, cityFilter]);
+  }, [deals, search, period, customFrom, customTo, channelFilter, universityFilter, pendingOnly]);
 
-  // ── Счётчик за выбранный период
   const totals = useMemo(() => {
-    const count = filtered.length;
+    const n = filtered.length;
     const revenue = filtered.reduce((s, d) => s + (d.student_pays_rub ?? 0), 0);
-    const totalCny = filtered.reduce((s, d) => s + (d.amount_cny ?? 0), 0);
+    const cny = filtered.reduce((s, d) => s + (d.amount_cny ?? 0), 0);
     const profit = filtered.reduce((s, d) => s + (d.profit_rub ?? 0), 0);
-    const profitCny = filtered.reduce((s, d) => {
-      return d.atb_rate > 0 ? s + (d.profit_rub ?? 0) / d.atb_rate : s;
-    }, 0);
-    // Моя доля: с личной сделки всё, с общей половина
     const myShare = filtered.reduce((s, d) => s + (d.owner_share_rub ?? 0), 0);
-    return {
-      count,
-      revenue,
-      totalCny,
-      profit,
-      profitCny,
-      myShare,
-      avgCheckRub: count > 0 ? revenue / count : 0,
-      avgCheckCny: count > 0 ? totalCny / count : 0,
-    };
+    return { n, revenue, cny, profit, myShare, avg: n ? revenue / n : 0 };
   }, [filtered]);
 
-  // ── Сколько фильтров активно (кроме статуса и поиска — они на виду)
-  const activeAdvancedCount = [
-    period !== "all",
-    purposeFilter !== "all",
-    channelFilter !== "all",
-    universityFilter !== "all",
-    cityFilter !== "all",
+  const trend = useMemo(() => {
+    const now = new Date();
+    const out: number[] = [];
+    for (let i = 11; i >= 0; i--) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+      out.push(deals.filter((x) => x.date.startsWith(key))
+        .reduce((s, x) => s + (x.profit_rub ?? 0), 0));
+    }
+    return out;
+  }, [deals]);
+
+  const grouped = useMemo(() => {
+    const map = new Map<string, Deal[]>();
+    for (const d of filtered) {
+      const k = d.date.slice(0, 7);
+      const arr = map.get(k);
+      if (arr) arr.push(d); else map.set(k, [d]);
+    }
+    return Array.from(map.entries()).map(([key, rows]) => {
+      const [y, m] = key.split("-");
+      return {
+        key,
+        title: `${MONTHS_FULL[+m - 1]} ${y}`,
+        rows,
+        profit: rows.reduce((s, d) => s + (d.profit_rub ?? 0), 0),
+      };
+    });
+  }, [filtered]);
+
+  const activeFilters = [
+    period !== "all", channelFilter !== "all", universityFilter !== "all",
+    pendingOnly, !!search,
   ].filter(Boolean).length;
 
-  const resetFilters = useCallback(() => {
-    setPeriod("all");
-    setCustomFrom("");
-    setCustomTo("");
-    setPurposeFilter("all");
-    setChannelFilter("all");
-    setUniversityFilter("all");
-    setCityFilter("all");
-    setStatusFilter("all");
-    setSearch("");
+  const reset = useCallback(() => {
+    setPeriod("all"); setCustomFrom(""); setCustomTo("");
+    setChannelFilter("all"); setUniversityFilter("all");
+    setPendingOnly(false); setSearch("");
   }, []);
 
-  const periodLabel = period === "custom" && (customFrom || customTo)
-    ? `${customFrom || "…"} → ${customTo || "…"}`
-    : PERIOD_LABELS[period];
+  /** Переключить отметку расчёта. Оптимистично — интерфейс не ждёт сервер. */
+  const toggleSettled = useCallback(async (deal: Deal, next: boolean) => {
+    if (busy.has(deal.id)) return;
+    setBusy((s) => new Set(s).add(deal.id));
+    setDeals((ds) => ds.map((d) => d.id === deal.id ? { ...d, shage_settled: next } : d));
+
+    try {
+      const res = await fetch(`/api/deals/${deal.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ shage_settled: next }),
+      });
+      if (!res.ok) throw new Error("save failed");
+      router.refresh();
+    } catch {
+      // Откатываем — сервер не принял
+      setDeals((ds) => ds.map((d) => d.id === deal.id ? { ...d, shage_settled: !next } : d));
+    } finally {
+      setBusy((s) => { const n = new Set(s); n.delete(deal.id); return n; });
+    }
+  }, [busy, router]);
+
+  /** Массовая отметка расчёта. Запросы параллельно, откат — только у упавших. */
+  const bulkSettle = useCallback(async (next: boolean) => {
+    const ids = Array.from(selected);
+    if (ids.length === 0) return;
+    setBulkRunning(true);
+    setDeals((ds) => ds.map((d) => ids.includes(d.id) ? { ...d, shage_settled: next } : d));
+
+    const results = await Promise.allSettled(
+      ids.map((id) =>
+        fetch(`/api/deals/${id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ shage_settled: next }),
+        }).then((r) => { if (!r.ok) throw new Error(id); return id; }),
+      ),
+    );
+
+    /*
+     * flatMap, а не filter().map(): после filter индекс i считается уже
+     * по отфильтрованному массиву, и откатывалась не та сделка, которая
+     * упала, а та, что стояла в списке на её месте.
+     */
+    const failed = new Set(
+      results.flatMap((r, i) => (r.status === "rejected" ? [ids[i]] : [])),
+    );
+    if (failed.size > 0) {
+      setDeals((ds) => ds.map((d) => failed.has(d.id) ? { ...d, shage_settled: !next } : d));
+    }
+
+    setSelected(new Set());
+    setBulkRunning(false);
+    router.refresh();
+  }, [selected, router]);
+
+  /** Выделять есть смысл только сделки через посредника */
+  const selectableIds = useMemo(
+    () => filtered.filter((d) => d.channel === "shage").map((d) => d.id),
+    [filtered],
+  );
+  const allSelected = selectableIds.length > 0 && selectableIds.every((id) => selected.has(id));
+
+  function toggleOne(id: string) {
+    setSelected((s) => {
+      const n = new Set(s);
+      if (n.has(id)) n.delete(id); else n.add(id);
+      return n;
+    });
+  }
+  function toggleAll() {
+    setSelected(allSelected ? new Set() : new Set(selectableIds));
+  }
+
+  /** Ссылка на выгрузку — те же фильтры, что стоят на экране */
+  const exportHref = useMemo(() => {
+    const range = resolvePeriod(period, customFrom, customTo);
+    const p = new URLSearchParams();
+    if (range) { p.set("from", range[0]); p.set("to", range[1]); }
+    if (search) p.set("search", search);
+    if (channelFilter !== "all") p.set("channel", channelFilter);
+    if (universityFilter !== "all") p.set("university", universityFilter);
+    if (pendingOnly) p.set("pending", "1");
+    const qs = p.toString();
+    return `/api/deals/export${qs ? `?${qs}` : ""}`;
+  }, [period, customFrom, customTo, search, channelFilter, universityFilter, pendingOnly]);
+
+  const metrics: Metric[] = [
+    { label: "Сделок", value: String(totals.n) },
+    { label: "Оборот", value: formatRub(totals.revenue), hint: formatCny(totals.cny) },
+    {
+      label: mode === "joint" ? "Прибыль" : "Моя доля",
+      value: formatRub(mode === "joint" ? totals.profit : totals.myShare),
+      tone: "success",
+      hint: mode === "joint" ? undefined : `всего ${formatRub(totals.profit)}`,
+    },
+    { label: "Средний чек", value: formatRub(totals.avg) },
+  ];
 
   return (
-    <div className="space-y-5">
-      {/* Header */}
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-3xl lg:text-4xl font-display font-bold tracking-tight text-ink-900">
-            Сделки
-          </h1>
-          <p className="mt-2 text-ink-500">
-            Журнал всех платежей студентов в Китай
-          </p>
-        </div>
-        <Link
-          href="/app/deals/new"
-          className="inline-flex items-center gap-2 bg-brand-500 hover:bg-brand-600 text-white font-display font-semibold text-sm px-4 py-2.5 rounded-xl shadow-sm transition-colors"
-        >
-          <Plus className="size-5" /> Новая сделка
-        </Link>
-      </div>
+    <div>
+      <PageHeader
+        title="Сделки"
+        meta={`${deals.length} ${plural(deals.length, "запись", "записи", "записей")}`}
+        actions={
+          <>
+            <a href={exportHref} download className="btn-ghost" title="Выгрузить в Excel">
+              <Download className="size-4" />
+              <span className="hidden sm:inline">Excel</span>
+            </a>
+            <Link href="/app/deals/new" className="btn-primary">
+              <Plus className="size-4" /> Новая сделка
+            </Link>
+          </>
+        }
+      />
 
-      {/* ═══ БЫСТРЫЕ ПРЕСЕТЫ ПЕРИОДА ═══ */}
-      <div className="flex gap-2 overflow-x-auto pb-1 -mx-1 px-1">
-        {(Object.keys(PERIOD_LABELS) as PeriodPreset[]).map((p) => (
-          <button
-            key={p}
-            onClick={() => {
-              setPeriod(p);
-              if (p === "custom") setShowAdvanced(true);
-            }}
-            className={cn(
-              "shrink-0 inline-flex items-center gap-1.5 text-xs font-medium px-3 py-2 rounded-lg transition-colors border",
-              period === p
-                ? "bg-brand-500 text-white border-brand-500"
-                : "bg-white border-ink-200 text-ink-700 hover:border-ink-300",
-            )}
-          >
-            {p === "custom" && <Calendar className="size-3.5" />}
-            {PERIOD_LABELS[p]}
-          </button>
-        ))}
-      </div>
-
-      {/* ═══ СЧЁТЧИК ЗА ПЕРИОД ═══ */}
-      <section className="bg-gradient-to-br from-brand-500 via-brand-600 to-brand-800 rounded-3xl p-6 text-white shadow-xl relative overflow-hidden">
-        <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_right,_rgba(255,255,255,0.15),_transparent_60%)]" />
-        <div className="relative">
-          <div className="flex items-center justify-between gap-3 mb-4">
-            <p className="text-xs font-medium uppercase tracking-widest text-brand-100">
-              За период: {periodLabel}
-            </p>
-            {activeAdvancedCount > 0 && (
-              <button
-                onClick={resetFilters}
-                className="text-xs text-brand-100 hover:text-white inline-flex items-center gap-1 transition-colors"
-              >
-                <X className="size-3" /> Сбросить
-              </button>
-            )}
-          </div>
-
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-            <CounterItem
-              icon={<Receipt className="size-4" />}
-              label="Сделок"
-              value={String(totals.count)}
-              big
-            />
-            <CounterItem
-              icon={<Wallet className="size-4" />}
-              label="Оборот"
-              value={formatRub(totals.revenue)}
-              subvalue={formatCny(totals.totalCny)}
-            />
-            <CounterItem
-              icon={<TrendingUp className="size-4" />}
-              label={mode === "joint" ? "Прибыль" : "Моя доля"}
-              value={formatRub(mode === "joint" ? totals.profit : totals.myShare)}
-              subvalue={
-                mode === "joint"
-                  ? totals.profitCny > 0 ? `≈ ${formatCny(totals.profitCny)}` : undefined
-                  : `оборот прибыли ${formatRub(totals.profit)}`
-              }
-            />
-            <CounterItem
-              icon={<Calendar className="size-4" />}
-              label="Средний чек"
-              value={formatRub(totals.avgCheckRub)}
-              subvalue={totals.avgCheckCny > 0 ? formatCny(totals.avgCheckCny) : undefined}
-            />
-          </div>
-        </div>
-      </section>
-
-      {/* ═══ ПОИСК + КНОПКА ФИЛЬТРОВ ═══ */}
-      <div className="flex gap-2">
-        <div className="relative flex-1">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-ink-500" />
-          <input
-            type="text"
-            placeholder="Поиск по имени студента…"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="w-full bg-white border border-ink-200 rounded-xl pl-10 pr-4 py-2.5 text-sm focus:outline-none focus:border-brand-500 focus:ring-4 focus:ring-brand-100 transition-all"
-          />
-        </div>
+      {/* ─── Долг посредника. Висит сверху, пока не рассчитались ─── */}
+      {shagePending.length > 0 && (
         <button
-          onClick={() => setShowAdvanced((v) => !v)}
+          onClick={() => setPendingOnly((v) => !v)}
           className={cn(
-            "shrink-0 inline-flex items-center gap-2 text-sm font-medium px-4 py-2.5 rounded-xl border transition-colors",
-            showAdvanced || activeAdvancedCount > 0
-              ? "bg-brand-50 border-brand-300 text-brand-700"
-              : "bg-white border-ink-200 text-ink-700 hover:border-ink-300",
+            "w-full flex items-center gap-3 px-4 py-3 rounded-xl border mb-4 text-left transition-colors",
+            pendingOnly
+              ? "bg-warning-bg border-warning"
+              : "bg-warning-bg border-warning/30 hover:border-warning/60",
           )}
         >
-          <SlidersHorizontal className="size-4" />
-          <span className="hidden sm:inline">Фильтры</span>
-          {activeAdvancedCount > 0 && (
-            <span className="bg-brand-500 text-white text-[10px] font-bold size-5 rounded-full flex items-center justify-center">
-              {activeAdvancedCount}
+          <Clock className="size-4 text-warning shrink-0" />
+          <span className="flex-1 min-w-0 text-xs">
+            <span className="font-medium text-warning">
+              沙哥 держит {formatCny(pendingCny)}
             </span>
-          )}
+            <span className="text-ink-500 ml-1.5">
+              ≈ {formatRub(pendingRub)} по {shagePending.length}{" "}
+              {plural(shagePending.length, "сделке", "сделкам", "сделкам")}
+            </span>
+          </span>
+          <span className="text-2xs text-warning font-medium shrink-0">
+            {pendingOnly ? "показать все" : "показать только их"}
+          </span>
         </button>
-      </div>
-
-      {/* ═══ РАСШИРЕННЫЕ ФИЛЬТРЫ ═══ */}
-      {showAdvanced && (
-        <div className="bg-white border border-ink-200 rounded-2xl p-5 space-y-4">
-          {/* Свои даты — показываем только при custom */}
-          {period === "custom" && (
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="text-xs uppercase tracking-wider text-ink-500 font-medium block mb-1.5">
-                  Дата с
-                </label>
-                <input
-                  type="date"
-                  value={customFrom}
-                  onChange={(e) => setCustomFrom(e.target.value)}
-                  className={selectCls}
-                />
-              </div>
-              <div>
-                <label className="text-xs uppercase tracking-wider text-ink-500 font-medium block mb-1.5">
-                  Дата по
-                </label>
-                <input
-                  type="date"
-                  value={customTo}
-                  onChange={(e) => setCustomTo(e.target.value)}
-                  className={selectCls}
-                />
-              </div>
-            </div>
-          )}
-
-          {/* Канал — чипсами, их всего 3 */}
-          <div>
-            <label className="text-xs uppercase tracking-wider text-ink-500 font-medium block mb-2">
-              Канал закупки
-            </label>
-            <div className="flex flex-wrap gap-2">
-              <FilterChip
-                active={channelFilter === "all"}
-                onClick={() => setChannelFilter("all")}
-              >
-                Все ({deals.length})
-              </FilterChip>
-              {CHANNELS.map((c) => {
-                const count = deals.filter((d) => (d.channel ?? "atb") === c.value).length;
-                return (
-                  <FilterChip
-                    key={c.value}
-                    active={channelFilter === c.value}
-                    onClick={() => setChannelFilter(c.value)}
-                  >
-                    {c.shortLabel} ({count})
-                  </FilterChip>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Назначение / Университет / Город — селектами */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-            <SelectFilter
-              label="Назначение"
-              value={purposeFilter}
-              onChange={setPurposeFilter}
-              options={options.purposes}
-              counts={(v) => deals.filter((d) => d.purpose === v).length}
-            />
-            <SelectFilter
-              label="Университет"
-              value={universityFilter}
-              onChange={setUniversityFilter}
-              options={options.universities}
-              counts={(v) => deals.filter((d) => d.university === v).length}
-            />
-            <SelectFilter
-              label="Город"
-              value={cityFilter}
-              onChange={setCityFilter}
-              options={options.cities}
-              counts={(v) => deals.filter((d) => d.city === v).length}
-            />
-          </div>
-        </div>
       )}
 
-      {/* ═══ СТАТУСЫ ═══ */}
-      <div className="flex gap-2 overflow-x-auto pb-1 -mx-1 px-1">
-        <FilterChip active={statusFilter === "all"} onClick={() => setStatusFilter("all")}>
-          Все статусы
-        </FilterChip>
-        {DEAL_STATUSES.map((s) => {
-          // Считаем в рамках уже отфильтрованного по периоду/каналу набора
-          const range = resolvePeriod(period, customFrom, customTo);
-          const scoped = deals.filter((d) => {
-            if (range && (d.date < range[0] || d.date > range[1])) return false;
-            if (channelFilter !== "all" && (d.channel ?? "atb") !== channelFilter) return false;
-            if (purposeFilter !== "all" && d.purpose !== purposeFilter) return false;
-            return true;
-          });
-          const count = scoped.filter((d) => d.status === s.value).length;
-          return (
-            <FilterChip
-              key={s.value}
-              active={statusFilter === s.value}
-              onClick={() => setStatusFilter(s.value)}
-            >
-              {s.label} ({count})
-            </FilterChip>
-          );
-        })}
-      </div>
+      <Panel>
+        <div className="border-b border-line">
+          <StatStrip
+            items={metrics}
+            right={<div className="hidden lg:block"><Sparkline values={trend} label="12 месяцев" /></div>}
+          />
+        </div>
 
-      {/* ═══ СПИСОК ═══ */}
-      {filtered.length === 0 ? (
-        <div className="bg-white border border-dashed border-ink-300 rounded-2xl p-10 text-center">
-          <div className="text-4xl mb-3">📋</div>
-          <h3 className="font-display font-semibold text-ink-900 mb-1">Нет сделок</h3>
-          <p className="text-sm text-ink-500 mb-4">
-            {deals.length === 0 ? "Создай первую — кнопка справа сверху." : "По текущим фильтрам ничего нет."}
-          </p>
-          {deals.length > 0 && (
-            <button
-              onClick={resetFilters}
-              className="text-sm text-brand-700 hover:text-brand-800 font-medium"
-            >
-              Сбросить фильтры
+        {/* ─── Периоды ─── */}
+        <div className="flex gap-1.5 px-3.5 py-2.5 border-b border-line overflow-x-auto">
+          {PERIOD_ORDER.map((p) => (
+            <button key={p} onClick={() => setPeriod(p)}
+              className={period === p ? "chip-on" : "chip"}>
+              {p === "custom" && <Calendar className="size-3 mr-1 inline-block -mt-px" />}
+              {PERIOD_LABELS[p]}
+            </button>
+          ))}
+        </div>
+
+        {period === "custom" && (
+          <div className="grid grid-cols-2 gap-2 px-3.5 py-2.5 border-b border-line bg-surface-sunken">
+            <label className="block">
+              <span className="label-micro">Дата с</span>
+              <input type="date" value={customFrom} onChange={(e) => setCustomFrom(e.target.value)}
+                className="field mt-1 py-1.5 text-xs" />
+            </label>
+            <label className="block">
+              <span className="label-micro">Дата по</span>
+              <input type="date" value={customTo} onChange={(e) => setCustomTo(e.target.value)}
+                className="field mt-1 py-1.5 text-xs" />
+            </label>
+          </div>
+        )}
+
+        {/* ─── Поиск, вуз, канал ─── */}
+        <div className="flex flex-wrap gap-2 px-3.5 py-2.5 border-b border-line">
+          <div className="relative flex-1 min-w-[180px]">
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3.5 text-ink-400 pointer-events-none" />
+            <input type="text" placeholder="Поиск по имени студента" value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="field pl-8 py-1.5 text-xs" />
+          </div>
+          <select value={universityFilter} onChange={(e) => setUniversityFilter(e.target.value)}
+            className="field py-1.5 text-xs w-auto min-w-[130px]">
+            <option value="all">Все вузы</option>
+            {universities.map((u) => (
+              <option key={u} value={u}>
+                {u} ({deals.filter((d) => d.university === u).length})
+              </option>
+            ))}
+          </select>
+          <select value={channelFilter}
+            onChange={(e) => setChannelFilter(e.target.value as Channel | "all")}
+            className="field py-1.5 text-xs w-auto min-w-[120px]">
+            <option value="all">Все каналы</option>
+            {CHANNELS.map((c) => (
+              <option key={c.value} value={c.value}>
+                {c.shortLabel} ({deals.filter((d) => (d.channel ?? "atb") === c.value).length})
+              </option>
+            ))}
+          </select>
+          {activeFilters > 0 && (
+            <button onClick={reset}
+              className="chip inline-flex items-center gap-1 shrink-0">
+              <X className="size-3" /> Сбросить
             </button>
           )}
         </div>
-      ) : (
-        <div className="space-y-2">
-          {filtered.map((deal) => <DealRow key={deal.id} deal={deal} />)}
-        </div>
+
+        {/* ─── Панель выделения. Заменяет заголовки, пока что-то выбрано ─── */}
+        {selected.size > 0 ? (
+          <div className="flex flex-wrap items-center gap-2 px-3.5 py-2 bg-brand-50 border-b border-brand-200">
+            <span className="text-xs font-medium text-brand-800">
+              Выбрано {selected.size}
+            </span>
+            <button onClick={() => bulkSettle(true)} disabled={bulkRunning}
+              className="chip bg-success-bg border-success/40 text-success hover:border-success
+                         inline-flex items-center gap-1 disabled:opacity-50">
+              <Check className="size-3" /> Отметить полученным
+            </button>
+            <button onClick={() => bulkSettle(false)} disabled={bulkRunning}
+              className="chip bg-warning-bg border-warning/40 text-warning hover:border-warning
+                         inline-flex items-center gap-1 disabled:opacity-50">
+              <Clock className="size-3" /> Вернуть «у него»
+            </button>
+            <button onClick={() => setSelected(new Set())}
+              className="ml-auto text-2xs text-ink-500 hover:text-ink-900 inline-flex items-center gap-1">
+              <X className="size-3" /> Снять выделение
+            </button>
+          </div>
+        ) : (
+          filtered.length > 0 && (
+            <div className="hidden md:flex items-center gap-3 px-3.5 py-2 bg-surface-sunken border-b border-line-strong">
+              <div className="w-5">
+                {selectableIds.length > 0 && (
+                  <button onClick={toggleAll} aria-label="Выделить все сделки через 沙哥"
+                    className="text-ink-400 hover:text-brand-600 transition-colors">
+                    <Square className="size-3.5" />
+                  </button>
+                )}
+              </div>
+              <div className="w-7 label-micro">Дата</div>
+              <div className="flex-1 min-w-0 label-micro">Студент</div>
+              <div className="w-[86px] label-micro">Канал</div>
+              <div className="w-[92px] label-micro text-right">Сумма</div>
+              <div className="w-[76px] label-micro text-right">Курс</div>
+              <div className="w-[108px] label-micro text-right">Прибыль</div>
+              <div className="w-[124px] label-micro">Расчёт</div>
+            </div>
+          )
+        )}
+
+        {filtered.length === 0 ? (
+          <EmptyState
+            icon={<ClipboardList className="size-8" strokeWidth={1.5} />}
+            title={deals.length === 0 ? "Сделок пока нет" : "Ничего не найдено"}
+            hint={deals.length === 0
+              ? "Создай первую — кнопка справа сверху."
+              : "По текущим фильтрам записей нет."}
+            action={deals.length > 0
+              ? <button onClick={reset} className="btn-ghost text-xs">Сбросить фильтры</button>
+              : undefined}
+          />
+        ) : (
+          grouped.map((g) => (
+            <div key={g.key}>
+              <div className="flex items-center justify-between gap-3 px-3.5 py-2 bg-surface-sunken border-b border-line">
+                <span className="label-micro">{g.title}</span>
+                <span className="text-2xs num font-medium text-ink-500">
+                  {g.rows.length} ·{" "}
+                  <span className={g.profit >= 0 ? "text-success" : "text-danger"}>
+                    {g.profit >= 0 ? "+" : ""}{formatRub(g.profit)}
+                  </span>
+                </span>
+              </div>
+              {g.rows.map((d) => (
+                <div key={d.id}>
+                  <DealRow deal={d} busy={busy.has(d.id)}
+                    selected={selected.has(d.id)}
+                    onSelect={() => toggleOne(d.id)}
+                    onOpen={() => setPopup(d)}
+                    onToggle={(next) => toggleSettled(d, next)} />
+                  <DealCardMobile deal={d} busy={busy.has(d.id)}
+                    onOpen={() => setPopup(d)}
+                    onToggle={(next) => toggleSettled(d, next)} />
+                </div>
+              ))}
+            </div>
+          ))
+        )}
+      </Panel>
+
+      {popup && (
+        <DealDialog
+          // Показываем свежую версию: отметку о расчёте могли переключить
+          // прямо в строке, пока карточка была закрыта
+          deal={deals.find((d) => d.id === popup.id) ?? popup}
+          onClose={() => setPopup(null)}
+        />
       )}
     </div>
-  );
-}
-
-const selectCls =
-  "w-full bg-white border border-ink-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-brand-500 focus:ring-4 focus:ring-brand-100 transition-all";
-
-// ═══════════════════════════════════════════════════════════════════
-// Элемент счётчика
-// ═══════════════════════════════════════════════════════════════════
-function CounterItem({
-  icon, label, value, subvalue, big,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  value: string;
-  subvalue?: string;
-  big?: boolean;
-}) {
-  return (
-    <div>
-      <div className="flex items-center gap-1.5 text-brand-100 mb-1">
-        {icon}
-        <p className="text-[10px] font-medium uppercase tracking-widest">{label}</p>
-      </div>
-      <p className={cn(
-        "font-display font-bold text-white tabular-nums leading-tight",
-        big ? "text-4xl" : "text-xl",
-      )}>
-        {value}
-      </p>
-      {subvalue && (
-        <p className="text-xs text-brand-100 tabular-nums mt-0.5">{subvalue}</p>
-      )}
-    </div>
-  );
-}
-
-// ═══════════════════════════════════════════════════════════════════
-// Селект-фильтр
-// ═══════════════════════════════════════════════════════════════════
-function SelectFilter({
-  label, value, onChange, options, counts,
-}: {
-  label: string;
-  value: string;
-  onChange: (v: string) => void;
-  options: string[];
-  counts: (v: string) => number;
-}) {
-  return (
-    <div>
-      <label className="text-xs uppercase tracking-wider text-ink-500 font-medium block mb-1.5">
-        {label}
-      </label>
-      <select
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className={selectCls}
-      >
-        <option value="all">Все</option>
-        {options.map((o) => (
-          <option key={o} value={o}>
-            {o} ({counts(o)})
-          </option>
-        ))}
-      </select>
-    </div>
-  );
-}
-
-function FilterChip({
-  active, onClick, children,
-}: {
-  active: boolean; onClick: () => void; children: React.ReactNode;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      className={cn(
-        "shrink-0 text-xs font-medium px-3 py-2 rounded-lg transition-colors",
-        active ? "bg-brand-500 text-white" : "bg-white border border-ink-200 text-ink-700 hover:border-ink-300",
-      )}
-    >
-      {children}
-    </button>
   );
 }
 
 // ═══════════════════════════════════════════════════════════════════
 // Строка сделки
 // ═══════════════════════════════════════════════════════════════════
-function DealRow({ deal }: { deal: Deal }) {
-  const status = statusInfo(deal.status);
+/** Ссылка «повторить»: та же сделка, но с сегодняшней датой */
+function repeatHref(d: Deal): string {
+  const p = new URLSearchParams();
+  p.set("student", d.student_name);
+  if (d.university) p.set("university", d.university);
+  if (d.city) p.set("city", d.city);
+  if (d.purpose) p.set("purpose", d.purpose);
+  p.set("channel", d.channel ?? "atb");
+  p.set("rate", String(d.atb_rate));
+  p.set("my_rate", String(d.my_rate));
+  p.set("amount", String(d.amount_cny));
+  if (d.visibility === "private") p.set("visibility", "private");
+  return `/app/deals/new?${p.toString()}`;
+}
+
+function DealRow({
+  deal, busy, onToggle, selected, onSelect, onOpen,
+}: {
+  deal: Deal;
+  busy: boolean;
+  onToggle: (next: boolean) => void;
+  selected: boolean;
+  onSelect: () => void;
+  onOpen: () => void;
+}) {
   const ch = channelInfo(deal.channel ?? "atb");
-  const profitColor =
-    (deal.profit_rub ?? 0) >= 5000 ? "text-success" :
-    (deal.profit_rub ?? 0) < 0 ? "text-danger" :
-    "text-warning";
+  const profit = deal.profit_rub ?? 0;
+  const tone = profit >= 0 ? "success" : "danger";
+  const Icon = profit >= 0 ? TrendingUp : TrendingDown;
+
+  const day = new Date(deal.date).getDate();
+  const isShage = deal.channel === "shage";
+  const settled = deal.shage_settled === true;
+
+  // Строка целиком живёт внутри <button>, где по спецификации допустим
+  // только строчный контент, поэтому раскладка собрана на span
+  const cell = (
+    <>
+      <span className="w-7 shrink-0 num text-xs text-ink-400">{String(day).padStart(2, "0")}</span>
+      <span className="flex-1 min-w-0 block">
+        <span className="flex items-center gap-1.5">
+          <span className="text-[13px] text-ink-900 truncate">{deal.student_name}</span>
+          {deal.visibility === "private" && (
+            <>
+              <Lock className="size-3 text-warning shrink-0" aria-hidden="true" />
+              <span className="sr-only">Личная сделка</span>
+            </>
+          )}
+        </span>
+        <span className="block text-2xs text-ink-400 truncate mt-px">
+          {[deal.university, deal.purpose].filter(Boolean).join(" · ") || "—"}
+          <span className="num ml-1.5 opacity-70">#{deal.id.slice(0, 4)}</span>
+        </span>
+      </span>
+      <span className="w-[86px] shrink-0"><Tag>{ch.shortLabel}</Tag></span>
+      <span className="w-[92px] shrink-0 text-right">
+        <Num value={new Intl.NumberFormat("ru-RU").format(deal.amount_cny)} unit="¥" size="sm" />
+      </span>
+      <span className="w-[76px] shrink-0 text-right">
+        <Num value={deal.atb_rate.toFixed(4)} size="sm" tone="muted" />
+      </span>
+      <span className="w-[108px] shrink-0 text-right">
+        <span className={cn("num text-xs font-semibold inline-flex items-center gap-1",
+          tone === "success" ? "text-success" : "text-danger")}>
+          <Icon className="size-3" aria-hidden="true" />
+          {profit >= 0 ? "+" : ""}{formatRub(profit)}
+        </span>
+      </span>
+    </>
+  );
 
   return (
-    <Link
-      href={`/app/deals/${deal.id}`}
-      className="block bg-white border border-ink-200 hover:border-brand-300 hover:shadow-sm rounded-2xl p-4 transition-all"
+    <div className={cn(
+      "hidden md:flex items-center gap-3 px-3.5 py-2.5 border-b border-line transition-colors group/row",
+      selected ? "bg-brand-50" : "hover:bg-ink-100/60",
+    )}>
+      {/* Выделять можно только сделки через посредника — массовое
+          действие пока одно, и оно про расчёт с ним */}
+      <div className="w-5 shrink-0">
+        {isShage && (
+          <button onClick={onSelect} aria-label="Выделить сделку"
+            className={cn("transition-colors",
+              selected ? "text-brand-600" : "text-ink-300 hover:text-ink-500")}>
+            {selected ? <CheckSquare className="size-3.5" /> : <Square className="size-3.5" />}
+          </button>
+        )}
+      </div>
+
+      {/* Клик открывает карточку поверх списка: фильтры и прокрутка
+          остаются на месте, а сверка занимает секунду вместо перехода */}
+      <button onClick={onOpen}
+        aria-label={`Открыть сделку: ${deal.student_name}`}
+        className="flex items-center gap-3 flex-1 min-w-0 text-left">
+        {cell}
+      </button>
+
+      <div className="w-[124px] shrink-0 flex items-center gap-1">
+        {isShage ? (
+          <SettleButton settled={settled} busy={busy} onToggle={onToggle} />
+        ) : (
+          <span className="text-2xs text-ink-300 flex-1">—</span>
+        )}
+        {/* focus-visible: иконка появляется по наведению, но с клавиатуры
+            до неё тоже добираются — иначе фокус уходил в невидимость */}
+        <Link href={repeatHref(deal)} title="Создать такую же сделку"
+          aria-label={`Повторить сделку: ${deal.student_name}`}
+          className="size-6 rounded flex items-center justify-center shrink-0
+                     text-ink-300 opacity-0 group-hover/row:opacity-100
+                     focus-visible:opacity-100
+                     hover:text-brand-600 hover:bg-brand-50 transition-all">
+          <Copy className="size-3.5" />
+        </Link>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Кнопка расчёта с посредником.
+ * Одно нажатие меняет состояние, второе — возвращает обратно,
+ * поэтому случайный клик не требует захода в карточку.
+ */
+function SettleButton({
+  settled, busy, onToggle,
+}: {
+  settled: boolean;
+  busy: boolean;
+  onToggle: (next: boolean) => void;
+}) {
+  return (
+    <button
+      onClick={(e) => { e.preventDefault(); e.stopPropagation(); onToggle(!settled); }}
+      disabled={busy}
+      title={settled ? "Нажми чтобы вернуть «у него»" : "Отметить, что деньги получены"}
+      className={cn(
+        "w-full inline-flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-md",
+        "text-2xs font-medium border transition-all disabled:opacity-50",
+        settled
+          ? "bg-success-bg border-success/30 text-success hover:border-success/60"
+          : "bg-warning-bg border-warning/40 text-warning hover:border-warning",
+      )}
     >
-      <div className="flex items-start gap-4">
-        {/* Дата */}
-        <div className="shrink-0 w-12 text-center">
-          <div className="text-2xl font-display font-bold text-ink-900 leading-none">
-            {new Date(deal.date).getDate()}
-          </div>
-          <div className="text-[10px] uppercase tracking-wider text-ink-500 font-medium mt-0.5">
-            {new Date(deal.date).toLocaleString("ru-RU", { month: "short" })}
-          </div>
-        </div>
+      {settled ? (
+        <>
+          <Check className="size-3" /> Получено
+          <Undo2 className="size-3 opacity-0 group-hover/row:opacity-60 transition-opacity" />
+        </>
+      ) : (
+        <>
+          <UserRound className="size-3" /> У 沙哥
+        </>
+      )}
+    </button>
+  );
+}
 
-        {/* Имя + метки */}
-        <div className="flex-1 min-w-0">
-          <div className="flex items-center gap-2 mb-1 flex-wrap">
-            <p className="font-display font-semibold text-ink-900 truncate">
-              {deal.student_name}
-            </p>
-            <span className={cn("text-[10px] font-medium px-1.5 py-0.5 rounded uppercase tracking-wider shrink-0", status.color)}>
-              {status.label}
-            </span>
-            <span className={cn("text-[10px] font-medium px-1.5 py-0.5 rounded shrink-0", ch.badgeClass)}>
-              {ch.shortLabel}
-            </span>
-            {deal.visibility === "private" && (
-              <span className="text-[10px] font-medium px-1.5 py-0.5 rounded shrink-0 bg-amber-100 text-amber-800 inline-flex items-center gap-0.5">
-                <Lock className="size-2.5" /> Личная
-              </span>
-            )}
-          </div>
-          <p className="text-xs text-ink-500 truncate">
-            {[deal.university, deal.purpose].filter(Boolean).join(" · ") || "—"}
-          </p>
-        </div>
+// ═══════════════════════════════════════════════════════════════════
+// Мобильная карточка
+// ═══════════════════════════════════════════════════════════════════
+function DealCardMobile({
+  deal, busy, onToggle, onOpen,
+}: {
+  deal: Deal;
+  busy: boolean;
+  onToggle: (next: boolean) => void;
+  onOpen: () => void;
+}) {
+  const ch = channelInfo(deal.channel ?? "atb");
+  const profit = deal.profit_rub ?? 0;
+  const Icon = profit >= 0 ? TrendingUp : TrendingDown;
+  const day = new Date(deal.date).getDate();
+  const month = MONTHS[new Date(deal.date).getMonth()];
 
-        {/* Суммы — desktop */}
-        <div className="hidden sm:flex flex-col items-end shrink-0 min-w-32">
-          <p className="font-display font-semibold text-sm text-ink-900 tabular-nums">
-            {formatCny(deal.amount_cny)}
-          </p>
-          <p className={cn("text-xs font-medium tabular-nums", profitColor)}>
-            {(deal.profit_rub ?? 0) >= 0 ? "+" : ""}{formatRub(deal.profit_rub)}
-          </p>
-        </div>
-
-        <ChevronRight className="size-4 text-ink-300 shrink-0 mt-2" />
-      </div>
-
-      {/* Mobile сумма */}
-      <div className="sm:hidden flex justify-between items-baseline mt-3 pt-3 border-t border-ink-100">
-        <span className="text-xs text-ink-500">{formatDate(deal.date)}</span>
-        <div className="flex items-baseline gap-3">
-          <span className="font-display font-semibold text-sm text-ink-900 tabular-nums">
-            {formatCny(deal.amount_cny)}
+  return (
+    <div className="md:hidden px-3.5 py-3 border-b border-line">
+      <button onClick={onOpen}
+        aria-label={`Открыть сделку: ${deal.student_name}`}
+        className="block w-full text-left">
+        <span className="flex items-center gap-2 mb-1">
+          <span className="text-sm text-ink-900 flex-1 min-w-0 truncate">{deal.student_name}</span>
+          {deal.visibility === "private" && (
+            <>
+              <Lock className="size-3 text-warning shrink-0" aria-hidden="true" />
+              <span className="sr-only">Личная сделка</span>
+            </>
+          )}
+          <span className={cn("num text-[13px] font-semibold inline-flex items-center gap-1 shrink-0",
+            profit >= 0 ? "text-success" : "text-danger")}>
+            <Icon className="size-3" aria-hidden="true" />{profit >= 0 ? "+" : ""}{formatRub(profit)}
           </span>
-          <span className={cn("text-xs font-medium tabular-nums", profitColor)}>
-            {(deal.profit_rub ?? 0) >= 0 ? "+" : ""}{formatRub(deal.profit_rub)}
-          </span>
+        </span>
+        <span className="flex items-center gap-2 text-2xs text-ink-400">
+          <span className="num shrink-0">{String(day).padStart(2, "0")} {month}</span>
+          <span aria-hidden="true">·</span>
+          <span className="truncate">{deal.university || "—"}</span>
+          <Tag className="shrink-0">{ch.shortLabel}</Tag>
+          <span className="ml-auto num text-ink-500 shrink-0">{formatCny(deal.amount_cny)}</span>
+        </span>
+      </button>
+      {deal.channel === "shage" && (
+        <div className="mt-2">
+          <SettleButton settled={deal.shage_settled === true} busy={busy} onToggle={onToggle} />
         </div>
-      </div>
-    </Link>
+      )}
+    </div>
   );
 }

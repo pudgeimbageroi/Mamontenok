@@ -1,4 +1,6 @@
+import { AlertTriangle } from "lucide-react";
 import { createSupabaseAdmin } from "@/lib/supabase/server";
+import { Panel, EmptyState } from "@/components/ui/primitives";
 import { CalcClient } from "./calc-client";
 import type { RateRow, MarkupSettings } from "@/lib/types";
 
@@ -15,13 +17,13 @@ export default async function CalcPage() {
 
   if (!rates || !markup) {
     return (
-      <div className="bg-white border border-ink-200 rounded-2xl p-10 text-center">
-        <div className="text-4xl mb-3">⚠</div>
-        <h3 className="font-display font-semibold text-ink-900 mb-1">Нет данных</h3>
-        <p className="text-sm text-ink-500">
-          Проверь что миграция SQL накачена в Supabase и есть начальные seed-данные.
-        </p>
-      </div>
+      <Panel>
+        <EmptyState
+          icon={<AlertTriangle className="size-8" strokeWidth={1.5} />}
+          title="Нет данных о курсах"
+          hint="Проверь, что SQL-миграция накатана в Supabase и есть начальные записи в таблицах rates и markup_settings."
+        />
+      </Panel>
     );
   }
 
