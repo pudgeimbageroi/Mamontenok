@@ -1,12 +1,17 @@
 import type { Config } from "tailwindcss";
 
 /**
- * Палитра переведена на CSS-переменные (rgb triplets) — значения задаются
- * в app/globals.css для :root (светлая) и .dark (тёмная).
- * Компоненты по-прежнему используют ink, brand, white и т.д. — они просто
- * «перекрашиваются» темой автоматически.
+ * Палитра целиком построена на CSS-переменных (см. app/globals.css).
+ *
+ * Это даёт две вещи бесплатно:
+ *   1. Тёмная тема — без единого dark: префикса в компонентах.
+ *      Переменные переопределяются на .dark, классы остаются те же.
+ *   2. Смена акцента по режиму просмотра (общий / личный / всё моё).
+ *
+ * Формат «R G B» через пробел + <alpha-value> нужен, чтобы работали
+ * модификаторы прозрачности: bg-surface/80, border-line/50 и т.д.
  */
-const withVar = (v: string) => `rgb(var(${v}) / <alpha-value>)`;
+const v = (name: string) => `rgb(var(--${name}) / <alpha-value>)`;
 
 const config: Config = {
   darkMode: ["class"],
@@ -23,58 +28,92 @@ const config: Config = {
     },
     extend: {
       colors: {
-        // карточка/поверхность (bg-white → тема-зависимый surface)
-        white: withVar("--card"),
-        card: withVar("--card"),
-        surface: withVar("--ink-50"),
-
+        // ─── Акцент. Меняется вместе с режимом просмотра ───
         brand: {
-          DEFAULT: withVar("--brand-500"),
-          50: withVar("--brand-50"),
-          100: withVar("--brand-100"),
-          200: withVar("--brand-200"),
-          300: withVar("--brand-300"),
-          400: withVar("--brand-400"),
-          500: withVar("--brand-500"),
-          600: withVar("--brand-600"),
-          700: withVar("--brand-700"),
-          800: withVar("--brand-800"),
-          900: withVar("--brand-900"),
+          DEFAULT: v("brand-500"),
+          50: v("brand-50"),
+          100: v("brand-100"),
+          200: v("brand-200"),
+          300: v("brand-300"),
+          400: v("brand-400"),
+          500: v("brand-500"),
+          600: v("brand-600"),
+          700: v("brand-700"),
+          800: v("brand-800"),
+          900: v("brand-900"),
+          /**
+           * Заливка под белым текстом: кнопки, активные чипы, блоки итога.
+           * Темнее brand-500, потому что белым по нему читать тяжело —
+           * зелёный акцент давал контраст 2.54 при норме 4.5.
+           */
+          solid: v("brand-solid"),
+          /** Наведение: всегда темнее, а не светлее — см. globals.css */
+          "solid-hover": v("brand-solid-hover"),
         },
-        ink: {
-          900: withVar("--ink-900"),
-          700: withVar("--ink-700"),
-          500: withVar("--ink-500"),
-          300: withVar("--ink-300"),
-          200: withVar("--ink-200"),
-          100: withVar("--ink-100"),
-          50: withVar("--ink-50"),
-        },
-        success: { DEFAULT: withVar("--success"), bg: withVar("--success-bg") },
-        danger: { DEFAULT: withVar("--danger"), bg: withVar("--danger-bg") },
-        warning: { DEFAULT: withVar("--warning"), bg: withVar("--warning-bg") },
-        input: { bg: withVar("--input-bg") },
 
-        // shadcn-совместимые токены
-        border: "hsl(var(--border))",
-        background: "hsl(var(--background))",
-        foreground: "hsl(var(--foreground))",
-        muted: {
-          DEFAULT: "hsl(var(--muted))",
-          foreground: "hsl(var(--muted-foreground))",
+        // ─── Поверхности ───
+        // surface — карточки и панели, поднятые над фоном страницы
+        surface: {
+          DEFAULT: v("surface"),
+          raised: v("surface-raised"),
+          sunken: v("surface-sunken"),
         },
+
+        // ─── Нейтральная шкала. В тёмной теме инвертируется ───
+        // ink-50 всегда «дальше всего от текста», ink-900 — сам текст
+        ink: {
+          900: v("ink-900"),
+          800: v("ink-800"),
+          700: v("ink-700"),
+          500: v("ink-500"),
+          400: v("ink-400"),
+          300: v("ink-300"),
+          200: v("ink-200"),
+          100: v("ink-100"),
+          50: v("ink-50"),
+        },
+
+        // ─── Линии ───
+        line: {
+          DEFAULT: v("line"),
+          strong: v("line-strong"),
+        },
+
+        // ─── Смысловые цвета. Не зависят от акцента режима ───
+        success: { DEFAULT: v("success"), bg: v("success-bg") },
+        danger: { DEFAULT: v("danger"), bg: v("danger-bg") },
+        warning: { DEFAULT: v("warning"), bg: v("warning-bg") },
+
+        input: { bg: v("input-bg") },
+
+        border: v("line"),
+        background: v("ink-50"),
+        foreground: v("ink-900"),
+        muted: { DEFAULT: v("ink-100"), foreground: v("ink-500") },
       },
+
       fontFamily: {
         display: ["var(--font-display)", "system-ui", "sans-serif"],
         body: ["var(--font-body)", "system-ui", "sans-serif"],
       },
+
+      // Плотная сетка терминала: радиусы меньше привычных
       borderRadius: {
-        lg: "0.75rem",
-        md: "0.5rem",
         sm: "0.25rem",
+        md: "0.375rem",
+        lg: "0.5rem",
+        xl: "0.625rem",
+        "2xl": "0.75rem",
+        "3xl": "1rem",
       },
-      boxShadow: {
-        card: "0 1px 2px 0 rgb(15 23 42 / 0.04)",
+
+      fontSize: {
+        "2xs": ["0.6875rem", { lineHeight: "1rem" }],
+      },
+
+      // Микро-подписи колонок и секций
+      letterSpacing: {
+        micro: "0.09em",
       },
     },
   },
