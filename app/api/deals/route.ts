@@ -10,7 +10,7 @@ import { getSession } from "@/lib/auth";
 import { createSupabaseAdmin } from "@/lib/supabase/server";
 import { fetchDeals, getViewMode } from "@/lib/deals-query";
 import { isOwner } from "@/lib/visibility";
-import { notifyDealEvent, fmtRub, fmtCny, esc } from "@/lib/notifications";
+import { notifyDealEvent, fmtRub, fmtCny, fmtPair, esc } from "@/lib/notifications";
 import { channelInfo } from "@/lib/channels";
 
 export async function GET(req: Request) {
@@ -80,6 +80,7 @@ export async function POST(req: Request) {
 
   // 🔔 Для личной сделки notifyDealEvent не отправит ничего
   const profit = Number(data.profit_rub ?? 0);
+  const rate = Number(data.atb_rate ?? 0);
   notifyDealEvent(
     data.visibility,
     session.telegramId,
@@ -89,8 +90,8 @@ export async function POST(req: Request) {
       (data.purpose ? `📋 ${esc(data.purpose)}\n` : "") +
       `💴 ${fmtCny(Number(data.amount_cny))} · ${channelInfo(data.channel).shortLabel}\n` +
       `💰 Студент платит: ${fmtRub(Number(data.student_pays_rub ?? 0))}\n` +
-      `📈 Прибыль: <b>${fmtRub(profit)}</b>\n` +
-      `🪨 На одного: ${fmtRub(profit / 2)}\n\n` +
+      `📈 Прибыль: <b>${fmtPair(profit, rate)}</b>\n` +
+      `🪨 На одного: ${fmtPair(profit / 2, rate)}\n\n` +
       `<i>Внёс: ${esc(session.displayName)}</i>`,
   ).catch(() => {});
 

@@ -196,12 +196,16 @@ export function CalcClient({
               subtitle="Сколько брать с студента" inputLabel="К оплате в Китае"
               suffix="¥" value={amountCny} onChange={setAmountCny} channel={chLabel}
               rows={[
-                { l: "Студент платит", v: formatRub(dealCny.studentPaysRub), strong: true },
-                { l: `Уйдёт с ${chLabel}`, v: formatRub(dealCny.atbOutflowRub) },
-                { l: "Прибыль", v: formatRub(dealCny.profitRub), profit: true,
-                  sub: baseRate > 0 ? formatCny(dealCny.profitRub / baseRate) : undefined },
-                { l: "На одного неандертальца", v: formatRub(dealCny.shareRub), share: true,
-                  sub: baseRate > 0 ? formatCny(dealCny.shareRub / baseRate) : undefined },
+                { l: "Студент платит", v: formatCny(amountCny), strong: true,
+                  sub: formatRub(dealCny.studentPaysRub) },
+                { l: `Уйдёт с ${chLabel}`, v: formatCny(amountCny),
+                  sub: formatRub(dealCny.atbOutflowRub) },
+                { l: "Прибыль", profit: true,
+                  v: baseRate > 0 ? formatCny(dealCny.profitRub / baseRate) : "—",
+                  sub: formatRub(dealCny.profitRub) },
+                { l: "На одного неандертальца", share: true,
+                  v: baseRate > 0 ? formatCny(dealCny.shareRub / baseRate) : "—",
+                  sub: formatRub(dealCny.shareRub) },
               ]}
               profit={dealCny.profitRub} />
 
@@ -209,12 +213,16 @@ export function CalcClient({
               subtitle="Сколько ¥ получит студент" inputLabel="Бюджет"
               suffix="₽" value={budgetRub} onChange={setBudgetRub} channel={chLabel}
               rows={[
-                { l: "Получит юаней", v: formatCny(dealRub.amountCny), strong: true },
-                { l: `Уйдёт с ${chLabel}`, v: formatRub(dealRub.atbOutflowRub) },
-                { l: "Прибыль", v: formatRub(dealRub.profitRub), profit: true,
-                  sub: baseRate > 0 ? formatCny(dealRub.profitRub / baseRate) : undefined },
-                { l: "На одного неандертальца", v: formatRub(dealRub.shareRub), share: true,
-                  sub: baseRate > 0 ? formatCny(dealRub.shareRub / baseRate) : undefined },
+                { l: "Получит юаней", v: formatCny(dealRub.amountCny), strong: true,
+                  sub: formatRub(budgetRub) },
+                { l: `Уйдёт с ${chLabel}`, v: formatCny(dealRub.amountCny),
+                  sub: formatRub(dealRub.atbOutflowRub) },
+                { l: "Прибыль", profit: true,
+                  v: baseRate > 0 ? formatCny(dealRub.profitRub / baseRate) : "—",
+                  sub: formatRub(dealRub.profitRub) },
+                { l: "На одного неандертальца", share: true,
+                  v: baseRate > 0 ? formatCny(dealRub.shareRub / baseRate) : "—",
+                  sub: formatRub(dealRub.shareRub) },
               ]}
               profit={dealRub.profitRub} />
           </div>

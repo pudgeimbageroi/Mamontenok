@@ -9,11 +9,12 @@ import {
   Download, Copy, CheckSquare, Square,
 } from "lucide-react";
 import { cn, formatRub, formatCny, plural } from "@/lib/utils";
+import { sumMoney, moneyOf, divideMoney } from "@/lib/money";
 import type { Deal, Channel } from "@/lib/types";
 import { CHANNELS, channelInfo } from "@/lib/channels";
 import type { ViewMode } from "@/lib/visibility";
 import {
-  PageHeader, Panel, Num, StatStrip, Sparkline, Tag, EmptyState, type Metric,
+  PageHeader, Panel, Num, MoneyPair, StatStrip, Sparkline, Tag, EmptyState, type Metric,
 } from "@/components/ui/primitives";
 import { DealDialog } from "@/components/deal-dialog";
 
@@ -110,11 +111,18 @@ export function DealsList({
 
   const totals = useMemo(() => {
     const n = filtered.length;
-    const revenue = filtered.reduce((s, d) => s + (d.student_pays_rub ?? 0), 0);
-    const cny = filtered.reduce((s, d) => s + (d.amount_cny ?? 0), 0);
-    const profit = filtered.reduce((s, d) => s + (d.profit_rub ?? 0), 0);
-    const myShare = filtered.reduce((s, d) => s + (d.owner_share_rub ?? 0), 0);
-    return { n, revenue, cny, profit, myShare, avg: n ? revenue / n : 0 };
+    /*
+     * Оборот — единственная пара, где ничего не пересчитывается: юани это
+     * фактически переведённая сумма, рубли — фактически полученная от
+     * студентов. Обе цифры настоящие, поэтому конверсия тут была бы враньём.
+     */
+    const revenue = {
+      cny: filtered.reduce((s, d) => s + (d.amount_cny ?? 0), 0),
+      rub: filtered.reduce((s, d) => s + (d.student_pays_rub ?? 0), 0),
+    };
+    const profit = sumMoney(filtered, (d) => d.profit_rub);
+    const myShare = sumMoney(filtered, (d) => d.owner_share_rub);
+    return { n, revenue, profit, myShare, avg: divideMoney(revenue, n) };
   }, [filtered]);
 
   const trend = useMemo(() => {
@@ -142,7 +150,7 @@ export function DealsList({
         key,
         title: `${MONTHS_FULL[+m - 1]} ${y}`,
         rows,
-        profit: rows.reduce((s, d) => s + (d.profit_rub ?? 0), 0),
+        profit: sumMoney(rows, (d) => d.profit_rub),
       };
     });
   }, [filtered]);
@@ -247,14 +255,14 @@ export function DealsList({
 
   const metrics: Metric[] = [
     { label: "Сделок", value: String(totals.n) },
-    { label: "Оборот", value: formatRub(totals.revenue), hint: formatCny(totals.cny) },
+    { label: "Оборот", money: totals.revenue },
     {
       label: mode === "joint" ? "Прибыль" : "Моя доля",
-      value: formatRub(mode === "joint" ? totals.profit : totals.myShare),
+      money: mode === "joint" ? totals.profit : totals.myShare,
       tone: "success",
-      hint: mode === "joint" ? undefined : `всего ${formatRub(totals.profit)}`,
+      hint: mode === "joint" ? undefined : `всего ${formatCny(totals.profit.cny)}`,
     },
-    { label: "Средний чек", value: formatRub(totals.avg) },
+    { label: "Средний чек", money: totals.avg },
   ];
 
   return (
@@ -406,9 +414,9 @@ export function DealsList({
               <div className="w-7 label-micro">Дата</div>
               <div className="flex-1 min-w-0 label-micro">Студент</div>
               <div className="w-[86px] label-micro">Канал</div>
-              <div className="w-[92px] label-micro text-right">Сумма</div>
+              <div className="w-[104px] label-micro text-right">Сумма</div>
               <div className="w-[76px] label-micro text-right">Курс</div>
-              <div className="w-[108px] label-micro text-right">Прибыль</div>
+              <div className="w-[112px] label-micro text-right">Прибыль</div>
               <div className="w-[124px] label-micro">Расчёт</div>
             </div>
           )
@@ -432,8 +440,11 @@ export function DealsList({
                 <span className="label-micro">{g.title}</span>
                 <span className="text-2xs num font-medium text-ink-500">
                   {g.rows.length} ·{" "}
-                  <span className={g.profit >= 0 ? "text-success" : "text-danger"}>
-                    {g.profit >= 0 ? "+" : ""}{formatRub(g.profit)}
+                  <span className={g.profit.cny >= 0 ? "text-success" : "text-danger"}>
+                    {g.profit.cny >= 0 ? "+" : ""}{formatCny(g.profit.cny)}
+                  </span>
+                  <span className="text-ink-400 ml-1.5">
+                    {g.profit.rub >= 0 ? "+" : ""}{formatRub(g.profit.rub)}
                   </span>
                 </span>
               </div>
@@ -495,9 +506,9 @@ function DealRow({
   onOpen: () => void;
 }) {
   const ch = channelInfo(deal.channel ?? "atb");
-  const profit = deal.profit_rub ?? 0;
-  const tone = profit >= 0 ? "success" : "danger";
-  const Icon = profit >= 0 ? TrendingUp : TrendingDown;
+  const profit = moneyOf(deal, deal.profit_rub);
+  const tone = profit.rub >= 0 ? "success" : "danger";
+  const Icon = profit.rub >= 0 ? TrendingUp : TrendingDown;
 
   const day = new Date(deal.date).getDate();
   const isShage = deal.channel === "shage";
@@ -524,17 +535,23 @@ function DealRow({
         </span>
       </span>
       <span className="w-[86px] shrink-0"><Tag>{ch.shortLabel}</Tag></span>
-      <span className="w-[92px] shrink-0 text-right">
-        <Num value={new Intl.NumberFormat("ru-RU").format(deal.amount_cny)} unit="¥" size="sm" />
+      <span className="w-[104px] shrink-0 text-right block">
+        <Num value={formatCny(deal.amount_cny)} size="sm" />
+        <span className="block text-2xs num text-ink-400">
+          {formatRub(deal.student_pays_rub)}
+        </span>
       </span>
       <span className="w-[76px] shrink-0 text-right">
         <Num value={deal.atb_rate.toFixed(4)} size="sm" tone="muted" />
       </span>
-      <span className="w-[108px] shrink-0 text-right">
+      <span className="w-[112px] shrink-0 text-right block">
         <span className={cn("num text-xs font-semibold inline-flex items-center gap-1",
           tone === "success" ? "text-success" : "text-danger")}>
           <Icon className="size-3" aria-hidden="true" />
-          {profit >= 0 ? "+" : ""}{formatRub(profit)}
+          {profit.cny >= 0 ? "+" : ""}{formatCny(profit.cny)}
+        </span>
+        <span className="block text-2xs num text-ink-400">
+          {profit.rub >= 0 ? "+" : ""}{formatRub(profit.rub)}
         </span>
       </span>
     </>
@@ -637,8 +654,8 @@ function DealCardMobile({
   onOpen: () => void;
 }) {
   const ch = channelInfo(deal.channel ?? "atb");
-  const profit = deal.profit_rub ?? 0;
-  const Icon = profit >= 0 ? TrendingUp : TrendingDown;
+  const profit = moneyOf(deal, deal.profit_rub);
+  const Icon = profit.rub >= 0 ? TrendingUp : TrendingDown;
   const day = new Date(deal.date).getDate();
   const month = MONTHS[new Date(deal.date).getMonth()];
 
@@ -656,8 +673,9 @@ function DealCardMobile({
             </>
           )}
           <span className={cn("num text-[13px] font-semibold inline-flex items-center gap-1 shrink-0",
-            profit >= 0 ? "text-success" : "text-danger")}>
-            <Icon className="size-3" aria-hidden="true" />{profit >= 0 ? "+" : ""}{formatRub(profit)}
+            profit.rub >= 0 ? "text-success" : "text-danger")}>
+            <Icon className="size-3" aria-hidden="true" />
+            {profit.cny >= 0 ? "+" : ""}{formatCny(profit.cny)}
           </span>
         </span>
         <span className="flex items-center gap-2 text-2xs text-ink-400">
@@ -665,7 +683,15 @@ function DealCardMobile({
           <span aria-hidden="true">·</span>
           <span className="truncate">{deal.university || "—"}</span>
           <Tag className="shrink-0">{ch.shortLabel}</Tag>
-          <span className="ml-auto num text-ink-500 shrink-0">{formatCny(deal.amount_cny)}</span>
+          <span className="ml-auto num text-ink-500 shrink-0">
+            {profit.rub >= 0 ? "+" : ""}{formatRub(profit.rub)}
+          </span>
+        </span>
+        <span className="flex items-center gap-2 text-2xs text-ink-400 mt-0.5">
+          <span className="num">{formatCny(deal.amount_cny)}</span>
+          <span aria-hidden="true">·</span>
+          <span className="num">{formatRub(deal.student_pays_rub)}</span>
+          <span className="ml-auto num">курс {deal.my_rate.toFixed(4)}</span>
         </span>
       </button>
       {deal.channel === "shage" && (

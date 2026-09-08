@@ -10,6 +10,7 @@
  */
 
 import type { Deal } from "./types";
+import { sumMoney, divideMoney, type Money } from "./money";
 
 /** Строка таблицы clients как есть */
 export type ClientRecord = {
@@ -41,10 +42,10 @@ export type Client = {
 
   deals: Deal[];
   count: number;
-  totalCny: number;
-  totalRub: number;
-  profitRub: number;
-  avgCheckRub: number;
+  /** Оборот: юани фактические, рубли — сколько заплатили студенты */
+  total: Money;
+  profit: Money;
+  avgCheck: Money;
   /** Средний курс, который мы ему давали — по нему видно, кому дали лучше */
   avgMyRate: number;
   /** null, пока сделок нет */
@@ -103,8 +104,11 @@ function aggregate(record: ClientRecord, rows: Deal[]): Client {
   const sorted = [...rows].sort((a, b) => a.date.localeCompare(b.date));
   const count = rows.length;
   const totalCny = rows.reduce((s, d) => s + (d.amount_cny ?? 0), 0);
-  const totalRub = rows.reduce((s, d) => s + (d.student_pays_rub ?? 0), 0);
-  const profitRub = rows.reduce((s, d) => s + (d.profit_rub ?? 0), 0);
+  const total: Money = {
+    cny: totalCny,
+    rub: rows.reduce((s, d) => s + (d.student_pays_rub ?? 0), 0),
+  };
+  const profit = sumMoney(rows, (d) => d.profit_rub);
 
   // Курс взвешиваем по объёму: сделка на 20 000 ¥ важнее сделки на 500 ¥
   const weighted = rows.reduce((s, d) => s + d.my_rate * (d.amount_cny ?? 0), 0);
@@ -129,10 +133,9 @@ function aggregate(record: ClientRecord, rows: Deal[]): Client {
 
     deals: [...rows].sort((a, b) => b.date.localeCompare(a.date)),
     count,
-    totalCny,
-    totalRub,
-    profitRub,
-    avgCheckRub: count > 0 ? totalRub / count : 0,
+    total,
+    profit,
+    avgCheck: divideMoney(total, count),
     avgMyRate,
     firstDate: count > 0 ? sorted[0].date : null,
     lastDate,
@@ -202,17 +205,17 @@ export function sortClients(list: Client[], by: ClientSort): Client[] {
   const out = [...list];
   switch (by) {
     case "count":
-      return out.sort((a, b) => b.count - a.count || b.profitRub - a.profitRub);
+      return out.sort((a, b) => b.count - a.count || b.profit.rub - a.profit.rub);
     case "recent":
       // Клиенты без сделок уходят вниз: сортировка по давности про них молчит
       return out.sort((a, b) => (b.lastDate ?? "").localeCompare(a.lastDate ?? ""));
     case "volume":
-      return out.sort((a, b) => b.totalRub - a.totalRub);
+      return out.sort((a, b) => b.total.cny - a.total.cny);
     case "name":
       return out.sort((a, b) => a.name.localeCompare(b.name, "ru"));
     case "profit":
     default:
-      return out.sort((a, b) => b.profitRub - a.profitRub);
+      return out.sort((a, b) => b.profit.rub - a.profit.rub);
   }
 }
 

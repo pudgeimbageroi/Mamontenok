@@ -529,13 +529,17 @@ async function handleCash(fromId: number) {
     .reduce((s, c) => s + c.amount_rub, 0);
   const balance = income - outflow - wS - wE - other;
 
+  // У денег в кассе своего курса нет — считаем по среднему закупочному
+  const totalCny = completed.reduce((s, d) => s + Number(d.amount_cny ?? 0), 0);
+  const avgRate = totalCny > 0 ? outflow / totalCny : 0;
+
   await sendBotMessage(
     fromId,
     `💰 <b>Касса</b>\n\n` +
-      `На АТБ: <b>${fmtRub(balance)}</b>\n` +
-      `Чистая прибыль: <b>${fmtRub(profit)}</b>\n\n` +
-      `🪨 Семён к выплате: ${fmtRub(Math.max(0, profit / 2 - wS))}\n` +
-      `🪨 Егор к выплате: ${fmtRub(Math.max(0, profit / 2 - wE))}\n\n` +
+      `На АТБ: <b>${fmtPair(balance, avgRate)}</b>\n` +
+      `Чистая прибыль: <b>${fmtPair(profit, avgRate)}</b>\n\n` +
+      `🪨 Семён к выплате: ${fmtPair(Math.max(0, profit / 2 - wS), avgRate)}\n` +
+      `🪨 Егор к выплате: ${fmtPair(Math.max(0, profit / 2 - wE), avgRate)}\n\n` +
       `<i>Завершённых сделок: ${completed.length}</i>`,
   );
   return NextResponse.json({ ok: true });
@@ -559,7 +563,8 @@ async function handleDeals(fromId: number) {
   }
   const lines = deals.map(
     (d) =>
-      `<code>${d.id.slice(0, 8)}</code>  ${d.student_name} · ${d.amount_cny}¥ · ${fmtRub(d.profit_rub ?? 0)}`,
+      `<code>${d.id.slice(0, 8)}</code>  ${d.student_name} · ${d.amount_cny}¥ · ` +
+      `${fmtPair(d.profit_rub ?? 0, d.atb_rate)}`,
   );
   await sendBotMessage(
     fromId,
@@ -600,7 +605,7 @@ async function handleCard(fromId: number, text: string) {
       `Курс АТБ: ${fmt4(d.atb_rate)}\n\n` +
       `Студент платит: ${fmtRub(d.student_pays_rub ?? 0)}\n` +
       `Уйдёт с АТБ: ${fmtRub(d.atb_outflow_rub ?? 0)}\n` +
-      `<b>Прибыль: ${fmtRub(d.profit_rub ?? 0)}</b>\n\n` +
+      `<b>Прибыль: ${fmtPair(d.profit_rub ?? 0, d.atb_rate)}</b>\n\n` +
       `<i>Статус: ${d.status}</i>`,
   );
   return NextResponse.json({ ok: true });
@@ -656,7 +661,7 @@ async function handleEdit(fromId: number, text: string) {
     `✏️ <b>Обновлено: ${d.student_name}</b>\n\n` +
       `Сумма: ${d.amount_cny} ¥\n` +
       `Мой курс: ${fmt4(d.my_rate)}\n` +
-      `<b>Прибыль: ${fmtRub(d.profit_rub ?? 0)}</b>`,
+      `<b>Прибыль: ${fmtPair(d.profit_rub ?? 0, d.atb_rate)}</b>`,
   );
   return NextResponse.json({ ok: true });
 }
@@ -726,7 +731,7 @@ async function handleNewDeal(fromId: number, text: string) {
     `✅ <b>Сделка создана</b>\n\n` +
       `👤 ${d.student_name}\n` +
       `💴 ${d.amount_cny} ¥ × ${fmt4(d.my_rate)}\n` +
-      `<b>Прибыль: ${fmtRub(d.profit_rub ?? 0)}</b>\n\n` +
+      `<b>Прибыль: ${fmtPair(d.profit_rub ?? 0, d.atb_rate)}</b>\n\n` +
       `<code>id: ${d.id.slice(0, 8)}</code>\n` +
       `<i>/card ${d.id.slice(0, 8)} — детали\n/edit ${d.id.slice(0, 8)} amount=… — правки</i>`,
   );
@@ -747,4 +752,18 @@ function fmt4(n: number | null | undefined): string {
 function fmtRub(n: number | null | undefined): string {
   if (n == null) return "—";
   return new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 0 }).format(n) + " ₽";
+}
+function fmtCny(n: number | null | undefined): string {
+  if (n == null) return "—";
+  return new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 2 }).format(n) + " ¥";
+}
+/**
+ * Пара валют для ответов бота: юань основной, рубль в скобках.
+ * Курс — закупочный курс сделки, как и везде в сервисе.
+ */
+function fmtPair(rub: number | null | undefined, rate: number | null | undefined): string {
+  const r = Number(rate);
+  const v = Number(rub ?? 0);
+  if (!Number.isFinite(r) || r <= 0) return fmtRub(v);
+  return `${fmtCny(v / r)} (${fmtRub(v)})`;
 }

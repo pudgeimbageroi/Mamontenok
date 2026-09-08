@@ -11,12 +11,15 @@ import {
   ClipboardList, Wallet, ArrowUpRight, ArrowDownRight, AlertTriangle, UserRound,
 } from "lucide-react";
 import { cn, formatRub, formatCny, plural } from "@/lib/utils";
+import { sumMoney, moneyOf, moneyAtRate, rubToCny, type Money } from "@/lib/money";
 import { statusInfo, type DealStatus } from "@/lib/deal-statuses";
 import { channelInfo } from "@/lib/channels";
 import type { Deal } from "@/lib/types";
 import type { CashflowRow } from "@/lib/cash-categories";
 import type { ViewMode } from "@/lib/visibility";
-import { PageHeader, Panel, PanelHead, Num, StatStrip, StatusDot, type Metric } from "@/components/ui/primitives";
+import {
+  PageHeader, Panel, PanelHead, Num, MoneyPair, StatStrip, StatusDot, type Metric,
+} from "@/components/ui/primitives";
 
 const MONTHS = ["Янв", "Фев", "Мар", "Апр", "Май", "Июн", "Июл", "Авг", "Сен", "Окт", "Ноя", "Дек"];
 const UNCLOSED: DealStatus[] = ["pending", "received_rub", "qr_paid"];
@@ -34,55 +37,76 @@ export function DashboardClient({
 }) {
   const stats = useMemo(() => {
     const done = deals.filter((d) => d.status === "completed");
-    const profit = done.reduce((s, d) => s + (d.profit_rub ?? 0), 0);
-    const myShare = done.reduce((s, d) => s + (d.owner_share_rub ?? 0), 0);
-    const partnerShare = done.reduce((s, d) => s + (d.partner_share_rub ?? 0), 0);
-    const revenue = done.reduce((s, d) => s + (d.student_pays_rub ?? 0), 0);
-    const profitCny = done.reduce(
-      (s, d) => (d.atb_rate > 0 ? s + (d.profit_rub ?? 0) / d.atb_rate : s), 0);
+    const profit = sumMoney(done, (d) => d.profit_rub);
+    const myShare = sumMoney(done, (d) => d.owner_share_rub);
+    const partnerShare = sumMoney(done, (d) => d.partner_share_rub);
+    // Оборот: обе цифры фактические, пересчитывать нечего
+    const revenue: Money = {
+      cny: done.reduce((s, d) => s + (d.amount_cny ?? 0), 0),
+      rub: done.reduce((s, d) => s + (d.student_pays_rub ?? 0), 0),
+    };
 
     const open = deals.filter((d) => UNCLOSED.includes(d.status as DealStatus));
-    const openRub = open.reduce((s, d) => s + (d.student_pays_rub ?? 0), 0);
+    const openMoney: Money = {
+      cny: open.reduce((s, d) => s + (d.amount_cny ?? 0), 0),
+      rub: open.reduce((s, d) => s + (d.student_pays_rub ?? 0), 0),
+    };
 
     // Прибыль по сделкам через 沙哥, где он ещё не рассчитался:
     // в общую цифру она входит, но физически денег у нас нет
     const shagePending = deals.filter((d) => d.channel === "shage" && d.shage_settled === false);
-    const shageDebtRub = shagePending.reduce((s, d) => s + (d.profit_rub ?? 0), 0);
-    const shageDebtCny = shagePending.reduce(
-      (s, d) => s + (d.atb_rate > 0 ? (d.profit_rub ?? 0) / d.atb_rate : 0), 0);
+    const shageDebt = sumMoney(shagePending, (d) => d.profit_rub);
 
     const wSem = cashflow.filter((c) => c.category === "withdrawal_to_semyon")
       .reduce((s, c) => s + c.amount_rub, 0);
     const wEg = cashflow.filter((c) => c.category === "withdrawal_to_egor")
       .reduce((s, c) => s + c.amount_rub, 0);
 
+    /*
+     * Остаток к выплате переводим в юани по среднему курсу закупки всей
+     * выборки: у выведенных из кассы денег своего курса сделки нет.
+     */
+    const avgRate = profit.cny > 0 ? profit.rub / profit.cny : 0;
+
     return {
-      profit, myShare, partnerShare, revenue, profitCny,
-      margin: revenue > 0 ? profit / revenue : 0,
-      openCount: open.length, openRub,
-      shageDebtRub, shageDebtCny, shagePendingCount: shagePending.length,
+      profit, myShare, partnerShare, revenue, shageDebt,
+      margin: revenue.rub > 0 ? profit.rub / revenue.rub : 0,
+      openCount: open.length, openMoney,
+      shagePendingCount: shagePending.length,
       doneCount: done.length,
-      myToPay: myShare - wSem,
-      egorToPay: partnerShare - wEg,
+      myToPay: moneyAtRate(myShare.rub - wSem, avgRate),
+      egorToPay: moneyAtRate(partnerShare.rub - wEg, avgRate),
+      avgRate,
     };
   }, [deals, cashflow]);
 
+  /**
+   * График строится в юанях — это основная валюта. Рубли едут рядом
+   * в подсказке, чтобы при наведении была видна привычная цифра.
+   */
   const monthly = useMemo(() => {
     const now = new Date();
-    const out: { key: string; label: string; profit: number; revenue: number; count: number }[] = [];
+    const out: {
+      key: string; label: string;
+      profit: number; profitRub: number;
+      revenue: number; revenueRub: number; count: number;
+    }[] = [];
     for (let i = 11; i >= 0; i--) {
       const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
       out.push({
         key: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`,
-        label: MONTHS[d.getMonth()], profit: 0, revenue: 0, count: 0,
+        label: MONTHS[d.getMonth()],
+        profit: 0, profitRub: 0, revenue: 0, revenueRub: 0, count: 0,
       });
     }
     for (const d of deals) {
       if (d.status !== "completed") continue;
       const b = out.find((x) => d.date.startsWith(x.key));
       if (!b) continue;
-      b.profit += d.profit_rub ?? 0;
-      b.revenue += d.student_pays_rub ?? 0;
+      b.profit += rubToCny(d.profit_rub, d.atb_rate);
+      b.profitRub += d.profit_rub ?? 0;
+      b.revenue += d.amount_cny ?? 0;
+      b.revenueRub += d.student_pays_rub ?? 0;
       b.count += 1;
     }
     return out;
@@ -94,7 +118,8 @@ export function DashboardClient({
       const rows = done.filter((d) => (d.channel ?? "atb") === ch);
       return {
         label: channelInfo(ch).shortLabel,
-        profit: rows.reduce((s, d) => s + (d.profit_rub ?? 0), 0),
+        profit: sumMoney(rows, (d) => d.profit_rub).cny,
+        profitRub: sumMoney(rows, (d) => d.profit_rub).rub,
         count: rows.length,
       };
     }).filter((x) => x.count > 0);
@@ -112,21 +137,26 @@ export function DashboardClient({
   const metrics: Metric[] = [
     {
       label: mode === "joint" ? "Прибыль всего" : "Мой заработок",
-      value: formatRub(mode === "joint" ? stats.profit : stats.myShare),
+      money: mode === "joint" ? stats.profit : stats.myShare,
       tone: "success",
       // Если часть прибыли ещё у посредника — говорим об этом прямо в карточке
-      hint: stats.shageDebtRub > 0
-        ? `${formatRub(stats.shageDebtRub)} у 沙哥`
-        : `≈ ${formatCny(stats.profitCny)}`,
-      hintTone: stats.shageDebtRub > 0 ? "danger" : "muted",
+      hint: stats.shageDebt.cny > 0
+        ? `${formatCny(stats.shageDebt.cny)} у 沙哥`
+        : undefined,
+      hintTone: stats.shageDebt.cny > 0 ? "danger" : "muted",
     },
-    { label: "Оборот", value: formatRub(stats.revenue),
-      hint: `маржа ${(stats.margin * 100).toFixed(1)}%` },
+    {
+      label: "Оборот",
+      money: stats.revenue,
+      hint: `маржа ${(stats.margin * 100).toFixed(1)}%`,
+    },
     { label: "Сделок закрыто", value: String(stats.doneCount) },
     { label: "В работе", value: String(stats.openCount),
       tone: stats.openCount > 0 ? "brand" : "default",
-      hint: stats.openRub > 0 ? `${formatRub(stats.openRub)} висит` : undefined,
-      hintTone: stats.openRub > 0 ? "danger" : "muted" },
+      hint: stats.openMoney.cny > 0
+        ? `${formatCny(stats.openMoney.cny)} висит`
+        : undefined,
+      hintTone: stats.openMoney.cny > 0 ? "danger" : "muted" },
   ];
 
   const hour = new Date().getHours();
@@ -149,10 +179,10 @@ export function DashboardClient({
               <UserRound className="size-4 text-warning shrink-0" />
               <div className="flex-1 min-w-0 text-xs">
                 <span className="font-medium text-warning">
-                  沙哥 держит {formatCny(stats.shageDebtCny)}
+                  沙哥 держит {formatCny(stats.shageDebt.cny)}
                 </span>
                 <span className="text-ink-500 ml-1.5">
-                  ≈ {formatRub(stats.shageDebtRub)} — прибыль учтена, денег ещё нет
+                  ≈ {formatRub(stats.shageDebt.rub)} — прибыль учтена, денег ещё нет
                 </span>
               </div>
               <ChevronRight className="size-4 text-ink-400 shrink-0" />
@@ -171,7 +201,7 @@ export function DashboardClient({
                   {stats.openCount} {plural(stats.openCount, "сделка", "сделки", "сделок")} в работе
                 </span>
                 <span className="text-ink-500 ml-1.5">
-                  на {formatRub(stats.openRub)} — деньги ещё не в кассе
+                  на {formatCny(stats.openMoney.cny)} · {formatRub(stats.openMoney.rub)} — деньги ещё не в кассе
                 </span>
               </div>
               <ChevronRight className="size-4 text-ink-400 shrink-0" />
@@ -186,10 +216,10 @@ export function DashboardClient({
               right={
                 <div className="flex items-center gap-3 text-2xs">
                   <span className="text-ink-400">
-                    макс <span className="num text-ink-700">{formatRub(maxMonth)}</span>
+                    макс <span className="num text-ink-700">{formatCny(maxMonth)}</span>
                   </span>
                   <span className="text-ink-400">
-                    средн <span className="num text-ink-700">{formatRub(avgMonth)}</span>
+                    средн <span className="num text-ink-700">{formatCny(avgMonth)}</span>
                   </span>
                 </div>
               } />
@@ -280,9 +310,10 @@ export function DashboardClient({
           ) : (
             recent.map((d) => {
               const st = statusInfo(d.status);
-              const profit = d.profit_rub ?? 0;
-              const tone = profit >= 5000 ? "success" : profit < 0 ? "danger" : "warning";
-              const Icon = profit < 0 ? TrendingDown : profit >= 5000 ? TrendingUp : AlertTriangle;
+              const profit = moneyOf(d, d.profit_rub);
+              const tone = profit.rub >= 5000 ? "success" : profit.rub < 0 ? "danger" : "warning";
+              const Icon = profit.rub < 0 ? TrendingDown
+                : profit.rub >= 5000 ? TrendingUp : AlertTriangle;
               return (
                 <Link key={d.id} href={`/app/deals/${d.id}`}
                   className="flex items-center gap-3 px-3.5 py-2.5 border-b border-line
@@ -294,12 +325,17 @@ export function DashboardClient({
                   <span className="hidden sm:block text-2xs text-ink-400 num">
                     {formatCny(d.amount_cny)}
                   </span>
-                  <span className={cn("num text-xs font-semibold inline-flex items-center gap-1 shrink-0",
-                    tone === "success" && "text-success",
-                    tone === "danger" && "text-danger",
-                    tone === "warning" && "text-warning")}>
-                    <Icon className="size-3" />
-                    {profit >= 0 ? "+" : ""}{formatRub(profit)}
+                  <span className="text-right shrink-0">
+                    <span className={cn("num text-xs font-semibold inline-flex items-center gap-1",
+                      tone === "success" && "text-success",
+                      tone === "danger" && "text-danger",
+                      tone === "warning" && "text-warning")}>
+                      <Icon className="size-3" />
+                      {profit.cny >= 0 ? "+" : ""}{formatCny(profit.cny)}
+                    </span>
+                    <span className="block text-2xs num text-ink-400">
+                      {profit.rub >= 0 ? "+" : ""}{formatRub(profit.rub)}
+                    </span>
                   </span>
                 </Link>
               );
@@ -321,21 +357,24 @@ export function DashboardClient({
 function ShareRow({
   name, accumulated, toPay,
 }: {
-  name: string; accumulated: number; toPay: number;
+  name: string; accumulated: Money; toPay: Money;
 }) {
-  const owed = toPay > 0;
+  const owed = toPay.rub > 0;
   return (
     <div className="px-3.5 py-3">
-      <div className="flex items-center justify-between gap-3">
-        <span className="text-xs text-ink-700">{name}</span>
-        <Num value={formatRub(accumulated)} size="md" />
+      <div className="flex items-start justify-between gap-3">
+        <span className="text-xs text-ink-700 pt-0.5">{name}</span>
+        <MoneyPair cny={accumulated.cny} rub={accumulated.rub} />
       </div>
-      <div className="flex items-center justify-between gap-3 mt-1">
+      <div className="flex items-center justify-between gap-3 mt-1.5">
         <span className="text-2xs text-ink-400">К выплате</span>
         <span className={cn("num text-xs font-semibold inline-flex items-center gap-1",
           owed ? "text-danger" : "text-success")}>
           {owed ? <ArrowUpRight className="size-3" /> : <ArrowDownRight className="size-3" />}
-          {formatRub(Math.max(0, toPay))}
+          {formatCny(Math.max(0, toPay.cny))}
+          <span className="text-ink-400 font-normal">
+            {formatRub(Math.max(0, toPay.rub))}
+          </span>
         </span>
       </div>
     </div>
@@ -386,15 +425,21 @@ function ChartTip({ active, payload, label }: {
     <div className="bg-surface-raised border border-line-strong rounded-lg px-3 py-2 shadow-lg min-w-[130px]">
       {label && <div className="text-2xs text-ink-400 mb-1">{label}</div>}
       <div className="num text-sm font-semibold text-ink-900">
-        {formatRub(payload[0]?.value ?? 0)}
+        {formatCny(payload[0]?.value ?? 0)}
       </div>
+      {row?.profitRub != null && (
+        <div className="num text-2xs text-ink-400">{formatRub(row.profitRub)}</div>
+      )}
       {row?.revenue != null && row.revenue > 0 && (
         <div className="mt-1 pt-1 border-t border-line space-y-0.5">
-          <TipLine label="Оборот" value={formatRub(row.revenue)} />
+          <TipLine label="Оборот" value={formatCny(row.revenue)} />
+          {row.revenueRub != null && (
+            <TipLine label="в рублях" value={formatRub(row.revenueRub)} />
+          )}
           {row.count != null && <TipLine label="Сделок" value={String(row.count)} />}
           {row.revenue > 0 && (
             <TipLine label="Маржа"
-              value={`${(((payload[0]?.value ?? 0) / row.revenue) * 100).toFixed(1)}%`} />
+              value={`${(((row.profitRub ?? 0) / (row.revenueRub || 1)) * 100).toFixed(1)}%`} />
           )}
         </div>
       )}

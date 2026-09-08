@@ -1,4 +1,4 @@
-import { cn } from "@/lib/utils";
+import { cn, formatRub, formatCny } from "@/lib/utils";
 
 /**
  * Строительные блоки интерфейса. Собраны в одном месте, чтобы
@@ -105,11 +105,56 @@ export function Num({
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// Сумма в двух валютах
+// ═══════════════════════════════════════════════════════════════════
+/**
+ * Юань крупно, рубль подписью.
+ *
+ * Основная валюта сервиса — юань, но зарабатываем мы в рублях, и обе
+ * цифры нужны одновременно: одна чтобы понимать объём, другая чтобы
+ * сверяться с банком. Держать их в одном компоненте надёжнее, чем
+ * собирать пару руками в каждой таблице.
+ */
+export function MoneyPair({
+  cny,
+  rub,
+  size = "md",
+  tone = "default",
+  align = "right",
+  signed = false,
+  className,
+}: {
+  cny: number;
+  rub: number;
+  size?: "sm" | "md" | "lg" | "xl";
+  tone?: "default" | "muted" | "success" | "danger" | "warning" | "brand";
+  align?: "left" | "right";
+  /** Показывать + у положительных — для прибыли */
+  signed?: boolean;
+  className?: string;
+}) {
+  const sign = signed && cny > 0 ? "+" : "";
+  const subSize = size === "xl" || size === "lg" ? "text-xs" : "text-2xs";
+
+  return (
+    <span className={cn("block", align === "right" && "text-right", className)}>
+      <Num value={sign + formatCny(cny)} size={size} tone={tone} />
+      <span className={cn("block num text-ink-400", subSize)}>
+        {sign + formatRub(rub)}
+      </span>
+    </span>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // Полоса метрик
 // ═══════════════════════════════════════════════════════════════════
 export type Metric = {
   label: string;
-  value: string;
+  /** Готовая строка — когда значение не денежное (штуки, проценты) */
+  value?: string;
+  /** Денежная пара: показывается ¥ крупно и ₽ подписью */
+  money?: { cny: number; rub: number };
   unit?: string;
   hint?: string;
   hintTone?: "success" | "danger" | "muted";
@@ -135,7 +180,17 @@ export function StatStrip({
         >
           <div className="label-micro">{m.label}</div>
           <div className="mt-1">
-            <Num value={m.value} unit={m.unit} size="lg" tone={m.tone ?? "default"} />
+            {m.money ? (
+              <MoneyPair
+                cny={m.money.cny}
+                rub={m.money.rub}
+                size="lg"
+                tone={m.tone ?? "default"}
+                align="left"
+              />
+            ) : (
+              <Num value={m.value ?? "—"} unit={m.unit} size="lg" tone={m.tone ?? "default"} />
+            )}
           </div>
           {m.hint && (
             <div

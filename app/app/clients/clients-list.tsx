@@ -11,10 +11,11 @@ import {
   type Client, type ClientRecord, type ClientSort,
 } from "@/lib/clients";
 import { channelInfo } from "@/lib/channels";
+import { moneyOf, divideMoney, addMoney, ZERO_MONEY } from "@/lib/money";
 import type { Deal } from "@/lib/types";
 import type { ViewMode } from "@/lib/visibility";
 import {
-  PageHeader, Panel, Num, StatStrip, Tag, EmptyState, type Metric,
+  PageHeader, Panel, Num, MoneyPair, StatStrip, Tag, EmptyState, type Metric,
 } from "@/components/ui/primitives";
 import { DealDialog } from "@/components/deal-dialog";
 import { ClientDialog } from "./client-dialog";
@@ -85,19 +86,21 @@ export function ClientsList({
 
   const totals = useMemo(() => {
     const repeat = all.filter((c) => c.isRepeat);
-    const repeatProfit = repeat.reduce((s, c) => s + c.profitRub, 0);
-    const totalProfit = all.reduce((s, c) => s + c.profitRub, 0);
+    const repeatProfit = repeat.reduce((s, c) => s + c.profit.rub, 0);
+    const totalProfit = all.reduce((m, c) => addMoney(m, c.profit), ZERO_MONEY);
+    const totalTurnover = all.reduce((m, c) => addMoney(m, c.total), ZERO_MONEY);
     const withDeals = all.filter((c) => c.count > 0);
     return {
       count: all.length,
       repeatCount: repeat.length,
       // Какая доля заработка приходится на вернувшихся —
       // это и есть ответ, стоит ли вкладываться в удержание
-      repeatShare: totalProfit > 0 ? (repeatProfit / totalProfit) * 100 : 0,
+      repeatShare: totalProfit.rub > 0 ? (repeatProfit / totalProfit.rub) * 100 : 0,
       totalProfit,
+      totalTurnover,
       // Средний считаем по тем, кто платил: иначе заведённые впрок
       // клиенты размывают цифру и она перестаёт что-либо значить
-      avgPerClient: withDeals.length > 0 ? totalProfit / withDeals.length : 0,
+      avgPerClient: divideMoney(totalProfit, withDeals.length),
       waiting: all.length - withDeals.length,
     };
   }, [all]);
@@ -118,8 +121,8 @@ export function ClientsList({
       hintTone: totals.repeatCount > 0 ? "success" : "muted",
       tone: totals.repeatCount > 0 ? "success" : "default",
     },
-    { label: "Прибыль всего", value: formatRub(totals.totalProfit) },
-    { label: "В среднем с клиента", value: formatRub(totals.avgPerClient) },
+    { label: "Прибыль всего", money: totals.totalProfit, tone: "success" },
+    { label: "В среднем с клиента", money: totals.avgPerClient },
   ];
 
   /** id настоящих карточек — виртуальные (из сделок без записи) править нельзя */
@@ -309,15 +312,17 @@ function ClientRow({
           </span>
           <span className="w-[62px] shrink-0 text-right"><Num value={String(c.count)} size="sm" /></span>
           <span className="w-[104px] shrink-0 text-right block">
-            <Num value={formatRub(c.totalRub)} size="sm" />
-            <span className="block text-2xs text-ink-400 num">{formatCny(c.totalCny)}</span>
+            <Num value={formatCny(c.total.cny)} size="sm" />
+            <span className="block text-2xs text-ink-400 num">{formatRub(c.total.rub)}</span>
           </span>
-          <span className="w-[104px] shrink-0 text-right">
-            <Num value={formatRub(c.profitRub)} size="sm"
+          <span className="w-[104px] shrink-0 text-right block">
+            <Num value={formatCny(c.profit.cny)} size="sm"
               tone={c.count > 0 ? "success" : "muted"} />
+            <span className="block text-2xs text-ink-400 num">{formatRub(c.profit.rub)}</span>
           </span>
-          <span className="w-[92px] shrink-0 text-right">
-            <Num value={formatRub(c.avgCheckRub)} size="sm" tone="muted" />
+          <span className="w-[92px] shrink-0 text-right block">
+            <Num value={formatCny(c.avgCheck.cny)} size="sm" tone="muted" />
+            <span className="block text-2xs text-ink-400 num">{formatRub(c.avgCheck.rub)}</span>
           </span>
           <span className="w-[76px] shrink-0 text-right">
             <Num value={c.avgMyRate > 0 ? c.avgMyRate.toFixed(4) : "—"} size="sm" tone="muted" />
@@ -357,9 +362,10 @@ function ClientRow({
             <span className="text-sm text-ink-900 flex-1 min-w-0 truncate">{c.name}</span>
             {lockTag}
             {c.isRepeat && <Tag tone="brand" className="shrink-0">×{c.count}</Tag>}
-            <span className="shrink-0">
-              <Num value={formatRub(c.profitRub)} size="sm"
+            <span className="shrink-0 text-right">
+              <Num value={formatCny(c.profit.cny)} size="sm"
                 tone={c.count > 0 ? "success" : "muted"} />
+              <span className="block text-2xs num text-ink-400">{formatRub(c.profit.rub)}</span>
             </span>
           </span>
           <span className="flex items-center gap-2 text-2xs text-ink-400 pl-6">
@@ -411,7 +417,7 @@ function ClientRow({
           ) : (
             c.deals.map((d) => {
               const ch = channelInfo(d.channel ?? "atb");
-              const profit = d.profit_rub ?? 0;
+              const profit = moneyOf(d, d.profit_rub);
               return (
                 <button key={d.id} onClick={() => onDeal(d)}
                   aria-label={`Сделка ${shortDate(d.date)} на ${formatCny(d.amount_cny)}`}
@@ -431,15 +437,21 @@ function ClientRow({
                     </Tag>
                   )}
                   <Tag className="hidden sm:inline-flex">{ch.shortLabel}</Tag>
-                  <span className="w-[80px] text-right hidden sm:block">
+                  <span className="w-[92px] text-right hidden sm:block">
                     <Num value={formatCny(d.amount_cny)} size="sm" tone="muted" />
+                    <span className="block text-2xs num text-ink-400">
+                      {formatRub(d.student_pays_rub)}
+                    </span>
                   </span>
-                  <span className="w-[76px] text-right hidden md:block">
+                  <span className="w-[70px] text-right hidden md:block">
                     <Num value={d.my_rate.toFixed(4)} size="sm" tone="muted" />
                   </span>
-                  <span className="w-[92px] text-right">
-                    <Num value={formatRub(profit)} size="sm"
-                      tone={profit >= 0 ? "success" : "danger"} />
+                  <span className="w-[96px] text-right">
+                    <Num value={formatCny(profit.cny)} size="sm"
+                      tone={profit.rub >= 0 ? "success" : "danger"} />
+                    <span className="block text-2xs num text-ink-400">
+                      {formatRub(profit.rub)}
+                    </span>
                   </span>
                 </button>
               );

@@ -106,6 +106,19 @@ export function fmtCny(n: number): string {
   return new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 2 }).format(n) + " ¥";
 }
 
+/**
+ * Пара валют для сообщений бота: юань основной, рубль в скобках.
+ *
+ * Рубли переводятся по курсу закупки сделки — тому же правилу, что
+ * и в интерфейсе, иначе цифра в телефоне не сошлась бы с цифрой на экране.
+ */
+export function fmtPair(rub: number, rate: number): string {
+  const cny = Number.isFinite(rate) && rate > 0 ? rub / rate : 0;
+  return rate > 0
+    ? `${fmtCny(cny)} (${fmtRub(rub)})`
+    : fmtRub(rub);
+}
+
 /** Экранирование для HTML parse_mode — имена студентов могут содержать < или & */
 export function esc(s: string | null | undefined): string {
   if (!s) return "";

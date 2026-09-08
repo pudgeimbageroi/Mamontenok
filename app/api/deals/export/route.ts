@@ -12,11 +12,18 @@ import { getSession } from "@/lib/auth";
 import { NextResponse } from "next/server";
 import { fetchDeals, getViewMode } from "@/lib/deals-query";
 import { buildCsv, exportFilename, type Column } from "@/lib/csv";
+import { rubToCny } from "@/lib/money";
 import { channelInfo } from "@/lib/channels";
 import { statusInfo } from "@/lib/deal-statuses";
 import type { Deal } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
+
+/** Рублёвое поле сделки в юанях по её курсу закупки */
+function cny(d: Deal, rub: number | null | undefined): number | null {
+  if (!(d.atb_rate > 0)) return null;
+  return rubToCny(rub, d.atb_rate);
+}
 
 export async function GET(req: Request) {
   const session = await getSession();
@@ -54,12 +61,16 @@ export async function GET(req: Request) {
     { header: "Курс ЦБ", value: (d) => d.cbr_rate },
     { header: "Студент заплатил, ₽", value: (d) => d.student_pays_rub },
     { header: "Ушло на закупку, ₽", value: (d) => d.atb_outflow_rub },
+    /*
+     * Юаневые колонки идут сразу за рублёвыми — так в сводной таблице
+     * их удобно складывать, не перескакивая через полтаблицы.
+     * Пересчёт по курсу закупки сделки, как и на экране.
+     */
+    { header: "Прибыль, ¥", value: (d) => cny(d, d.profit_rub) },
     { header: "Прибыль, ₽", value: (d) => d.profit_rub },
-    {
-      header: "Прибыль, ¥",
-      value: (d) => (d.atb_rate > 0 ? (d.profit_rub ?? 0) / d.atb_rate : null),
-    },
+    { header: "Моя доля, ¥", value: (d) => cny(d, d.owner_share_rub) },
     { header: "Моя доля, ₽", value: (d) => d.owner_share_rub },
+    { header: "Доля партнёра, ¥", value: (d) => cny(d, d.partner_share_rub) },
     { header: "Доля партнёра, ₽", value: (d) => d.partner_share_rub },
     {
       header: "Маржа, %",

@@ -7,6 +7,7 @@ import {
   ArrowUpRight, ArrowDownRight, Coins, Clock, X,
 } from "lucide-react";
 import { cn, formatRub, formatCny, plural } from "@/lib/utils";
+import { sumMoney, moneyAtRate, rubToCny, type Money } from "@/lib/money";
 import {
   CASH_CATEGORIES, cashCategoryInfo, signedAmount,
   type CashCategory, type CashflowRow, type CashCurrency, type CashDirection,
@@ -15,7 +16,7 @@ import type { Deal } from "@/lib/types";
 import { channelInfo } from "@/lib/channels";
 import type { ViewMode } from "@/lib/visibility";
 import {
-  PageHeader, Panel, PanelHead, Num, StatStrip, Tag, EmptyState, type Metric,
+  PageHeader, Panel, PanelHead, Num, MoneyPair, StatStrip, Tag, EmptyState, type Metric,
 } from "@/components/ui/primitives";
 
 const MONTHS = ["янв", "фев", "мар", "апр", "май", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"];
@@ -61,21 +62,27 @@ export function CashClient({
 
     // Долг посредника: прибыль по сделкам, где он ещё не рассчитался
     const pending = deals.filter((d) => d.channel === "shage" && d.shage_settled === false);
-    const shageDebtRub = pending.reduce((s, d) => s + (d.profit_rub ?? 0), 0);
-    const shageDebtCny = pending.reduce(
-      (s, d) => s + (d.atb_rate > 0 ? (d.profit_rub ?? 0) / d.atb_rate : 0), 0);
+    const shageDebt = sumMoney(pending, (d) => d.profit_rub);
 
     const incomeRub = sumIn(deals);
     const outflowRub = sumOut(deals);
     const totalCny = deals.reduce((s, d) => s + (d.amount_cny ?? 0), 0);
+
+    /*
+     * Эффективный курс закупки по всей книге сделок.
+     * У остатка в кассе своего курса нет — это перемешанные деньги, —
+     * поэтому в юани его переводим по тому, почём юань обходился в среднем.
+     */
+    const avgRate = totalCny > 0 ? outflowRub / totalCny : 0;
+    const at = (rub: number) => moneyAtRate(rub, avgRate);
 
     const wSem = cashflow.filter((c) => c.category === "withdrawal_to_semyon")
       .reduce((s, c) => s + c.amount_rub, 0);
     const wEg = cashflow.filter((c) => c.category === "withdrawal_to_egor")
       .reduce((s, c) => s + c.amount_rub, 0);
 
-    const semAcc = deals.reduce((s, d) => s + (d.owner_share_rub ?? 0), 0);
-    const egAcc = deals.reduce((s, d) => s + (d.partner_share_rub ?? 0), 0);
+    const semAcc = sumMoney(deals, (d) => d.owner_share_rub);
+    const egAcc = sumMoney(deals, (d) => d.partner_share_rub);
 
     // Начисленный остаток — сколько получилось по всем сделкам и операциям.
     // Реально доступный — за вычетом того, что физически лежит у посредника:
@@ -83,15 +90,20 @@ export function CashClient({
     const accrued = channels.reduce((s, c) => s + c.balance, 0);
 
     return {
-      channels,
-      accrued,
-      total: accrued - shageDebtRub,
-      incomeRub, outflowRub, totalCny,
-      profitRub: incomeRub - outflowRub,
-      shageDebtRub, shageDebtCny, pendingCount: pending.length,
-      withdrawnSemyon: wSem, withdrawnEgor: wEg,
+      channels: channels.map((c) => ({ ...c, balanceMoney: at(c.balance) })),
+      avgRate,
+      accrued: at(accrued),
+      total: at(accrued - shageDebt.rub),
+      // Приход и отправка: юаневая часть у обоих одна и та же — это сумма,
+      // которую перевели. Разные только рубли по разные стороны курса.
+      income: { cny: totalCny, rub: incomeRub },
+      outflow: { cny: totalCny, rub: outflowRub },
+      profit: sumMoney(deals, (d) => d.profit_rub),
+      shageDebt, pendingCount: pending.length,
+      withdrawn: at(wSem + wEg),
+      withdrawnSemyon: at(wSem), withdrawnEgor: at(wEg),
       semAcc, egAcc,
-      semToPay: semAcc - wSem, egToPay: egAcc - wEg,
+      semToPay: at(semAcc.rub - wSem), egToPay: at(egAcc.rub - wEg),
     };
   }, [deals, cashflow]);
 
@@ -109,10 +121,10 @@ export function CashClient({
   }
 
   const metrics: Metric[] = [
-    { label: "Приход от студентов", value: formatRub(stats.incomeRub), hint: formatCny(stats.totalCny) },
-    { label: "Отправлено в Китай", value: formatRub(stats.outflowRub) },
-    { label: "Чистая прибыль", value: formatRub(stats.profitRub), tone: "success" },
-    { label: "Выведено партнёрам", value: formatRub(stats.withdrawnSemyon + stats.withdrawnEgor) },
+    { label: "Приход от студентов", money: stats.income },
+    { label: "Отправлено в Китай", money: stats.outflow },
+    { label: "Чистая прибыль", money: stats.profit, tone: "success" },
+    { label: "Выведено партнёрам", money: stats.withdrawn },
   ];
 
   return (
@@ -135,7 +147,10 @@ export function CashClient({
                 {stats.pendingCount > 0 ? "Реально доступно" : "Остаток по всем счетам"}
               </div>
               <div className="num font-display font-bold text-3xl lg:text-4xl mt-1">
-                {formatRub(stats.total)}
+                {formatCny(stats.total.cny)}
+              </div>
+              <div className="num text-sm text-white/70 mt-0.5">
+                {formatRub(stats.total.rub)}
               </div>
             </div>
             <div className="flex gap-5">
@@ -143,7 +158,10 @@ export function CashClient({
                 <div key={c.key}>
                   <div className="text-2xs text-white/70">{c.label}</div>
                   <div className="num font-display font-semibold text-sm mt-0.5">
-                    {formatRub(c.balance)}
+                    {formatCny(c.balanceMoney.cny)}
+                  </div>
+                  <div className="num text-2xs text-white/60">
+                    {formatRub(c.balanceMoney.rub)}
                   </div>
                 </div>
               ))}
@@ -154,11 +172,11 @@ export function CashClient({
           {stats.pendingCount > 0 && (
             <div className="px-5 py-2.5 bg-black/15 flex flex-wrap items-center gap-x-4 gap-y-1 text-2xs">
               <span className="text-white/70">
-                Начислено <span className="num text-white">{formatRub(stats.accrued)}</span>
+                Начислено <span className="num text-white">{formatCny(stats.accrued.cny)}</span>
               </span>
               <span className="text-white/50">−</span>
               <span className="text-white/70">
-                у 沙哥 <span className="num text-white">{formatRub(stats.shageDebtRub)}</span>
+                у 沙哥 <span className="num text-white">{formatCny(stats.shageDebt.cny)}</span>
               </span>
               <span className="text-white/50 hidden sm:inline">
                 · прибыль посчитана, но денег на руках ещё нет
@@ -173,10 +191,10 @@ export function CashClient({
             <Clock className="size-4 text-warning shrink-0" />
             <div className="flex-1 min-w-0 text-xs">
               <span className="font-medium text-warning">
-                沙哥 должен {formatCny(stats.shageDebtCny)}
+                沙哥 должен {formatCny(stats.shageDebt.cny)}
               </span>
               <span className="text-ink-500 ml-1.5">
-                ≈ {formatRub(stats.shageDebtRub)} по {stats.pendingCount}{" "}
+                ≈ {formatRub(stats.shageDebt.rub)} по {stats.pendingCount}{" "}
                 {plural(stats.pendingCount, "сделке", "сделкам", "сделкам")} — отметить можно в списке сделок
               </span>
             </div>
@@ -195,7 +213,8 @@ export function CashClient({
                   <span className="text-xs font-medium text-ink-700 truncate">{c.label}</span>
                   <span className="ml-auto text-2xs text-ink-400 num shrink-0">{c.count}</span>
                 </div>
-                <Num value={formatRub(c.balance)} size="lg" tone={c.balance < 0 ? "danger" : "default"} />
+                <MoneyPair cny={c.balanceMoney.cny} rub={c.balanceMoney.rub} size="lg"
+                  align="left" tone={c.balance < 0 ? "danger" : "default"} />
                 <div className="mt-2 space-y-0.5 text-2xs">
                   <Line label="Приход" value={`+${formatRub(c.income)}`} tone="success" />
                   <Line label="В Китай" value={`−${formatRub(c.outflow)}`} />
@@ -235,7 +254,8 @@ export function CashClient({
             />
           ) : (
             cashflow.map((row) => (
-              <CashRow key={row.id} row={row} onDelete={() => handleDelete(row.id)} />
+              <CashRow key={row.id} row={row} fallbackRate={stats.avgRate}
+                onDelete={() => handleDelete(row.id)} />
             ))
           )}
         </Panel>
@@ -262,27 +282,38 @@ function Line({ label, value, tone }: { label: string; value: string; tone?: "su
 function PartnerCell({
   name, accumulated, withdrawn, toPay,
 }: {
-  name: string; accumulated: number; withdrawn: number; toPay: number;
+  name: string; accumulated: Money; withdrawn: Money; toPay: Money;
 }) {
-  const owed = toPay > 0;
+  const owed = toPay.rub > 0;
   return (
     <div className="px-4 py-3.5">
       <div className="text-xs font-medium text-ink-700 mb-2">{name}</div>
       <div className="space-y-1.5">
         <div className="flex justify-between items-baseline gap-3">
           <span className="text-2xs text-ink-400">Накоплено</span>
-          <Num value={formatRub(accumulated)} size="sm" tone="muted" />
+          <span className="num text-xs text-ink-500 text-right">
+            {formatCny(accumulated.cny)}
+            <span className="block text-2xs text-ink-400">{formatRub(accumulated.rub)}</span>
+          </span>
         </div>
         <div className="flex justify-between items-baseline gap-3">
           <span className="text-2xs text-ink-400">Выведено</span>
-          <Num value={formatRub(withdrawn)} size="sm" tone="muted" />
+          <span className="num text-xs text-ink-500 text-right">
+            {formatCny(withdrawn.cny)}
+            <span className="block text-2xs text-ink-400">{formatRub(withdrawn.rub)}</span>
+          </span>
         </div>
         <div className="flex justify-between items-baseline gap-3 pt-1.5 border-t border-line">
           <span className="text-xs text-ink-900">К выплате</span>
-          <span className={cn("num text-base font-semibold font-display inline-flex items-center gap-1",
-            owed ? "text-danger" : "text-success")}>
-            {owed ? <ArrowUpRight className="size-3.5" /> : <ArrowDownRight className="size-3.5" />}
-            {formatRub(Math.max(0, toPay))}
+          <span className="text-right">
+            <span className={cn("num text-base font-semibold font-display inline-flex items-center gap-1",
+              owed ? "text-danger" : "text-success")}>
+              {owed ? <ArrowUpRight className="size-3.5" /> : <ArrowDownRight className="size-3.5" />}
+              {formatCny(Math.max(0, toPay.cny))}
+            </span>
+            <span className="block num text-2xs text-ink-400">
+              {formatRub(Math.max(0, toPay.rub))}
+            </span>
           </span>
         </div>
       </div>
@@ -290,7 +321,17 @@ function PartnerCell({
   );
 }
 
-function CashRow({ row, onDelete }: { row: CashflowRow; onDelete: () => void }) {
+function CashRow({
+  row, onDelete, fallbackRate,
+}: {
+  row: CashflowRow;
+  onDelete: () => void;
+  /**
+   * Курс для рублёвых операций: у них своего нет — это просто вывод денег.
+   * Берём средний по книге сделок, иначе юаневая колонка была бы пустой.
+   */
+  fallbackRate: number;
+}) {
   const cat = cashCategoryInfo(row.category);
   const d = new Date(row.date);
   const isIn = row.direction === "in";
@@ -320,13 +361,12 @@ function CashRow({ row, onDelete }: { row: CashflowRow; onDelete: () => void }) 
         <span className={cn("num font-display font-semibold text-sm inline-flex items-center gap-1",
           isIn ? "text-success" : "text-ink-900")}>
           {isIn ? "+" : "−"}
-          {row.currency === "CNY" && row.amount_cny
-            ? formatCny(row.amount_cny)
-            : formatRub(row.amount_rub)}
+          {/* Юаневая сумма: своя, если операция была в ¥, иначе по курсу */}
+          {formatCny(row.amount_cny != null && row.amount_cny > 0
+            ? Number(row.amount_cny)
+            : rubToCny(row.amount_rub, Number(row.rate) || fallbackRate))}
         </span>
-        {row.currency === "CNY" && (
-          <div className="text-2xs text-ink-400 num">{formatRub(row.amount_rub)}</div>
-        )}
+        <div className="text-2xs text-ink-400 num">{formatRub(row.amount_rub)}</div>
       </div>
       <button onClick={onDelete} aria-label="Удалить"
         className="size-6 rounded flex items-center justify-center text-ink-300

@@ -12,7 +12,7 @@ import { NextResponse } from "next/server";
 import { getSession } from "@/lib/auth";
 import { createSupabaseAdmin } from "@/lib/supabase/server";
 import { fetchDealById } from "@/lib/deals-query";
-import { notifyDealEvent, fmtRub, fmtCny, esc } from "@/lib/notifications";
+import { notifyDealEvent, fmtRub, fmtCny, fmtPair, esc } from "@/lib/notifications";
 import { statusInfo } from "@/lib/deal-statuses";
 import { channelInfo } from "@/lib/channels";
 
@@ -68,17 +68,17 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
 
   // ─── Уведомления (для личных не отправится ничего) ───
   const profit = Number(data.profit_rub ?? 0);
+  const rate = Number(data.atb_rate ?? 0);
   const name = esc(data.student_name);
 
   if (isSettleToggle) {
     const got = data.shage_settled === true;
-    const cnyEquiv = Number(data.atb_rate) > 0 ? profit / Number(data.atb_rate) : 0;
     notifyDealEvent(
       data.visibility,
       session.telegramId,
       (got ? `💰 <b>沙哥 перевёл нашу долю</b>\n\n` : `↩️ <b>Отметка снята</b>\n\n`) +
         `👤 ${name}\n` +
-        `📈 ${fmtRub(profit)}` + (cnyEquiv > 0 ? ` · ≈ ${fmtCny(cnyEquiv)}` : "") + `\n` +
+        `📈 ${fmtPair(profit, rate)}\n` +
         (got ? `` : `<i>Деньги снова числятся у него.</i>\n`) +
         `\n<i>Отметил: ${esc(session.displayName)}</i>`,
     ).catch(() => {});
@@ -95,7 +95,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
         `👤 ${name}\n` +
         `💴 ${fmtCny(Number(data.amount_cny))} · ${channelInfo(data.channel).shortLabel}\n` +
         `📍 ${statusInfo(oldDeal.status).label} → <b>${info.label}</b>\n` +
-        `📈 Прибыль: <b>${fmtRub(profit)}</b>\n\n` +
+        `📈 Прибыль: <b>${fmtPair(profit, rate)}</b>\n\n` +
         `<i>${isClosed ? "Закрыл" : "Обновил"}: ${esc(session.displayName)}</i>`,
     ).catch(() => {});
   } else {
@@ -121,7 +121,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
         `✏️ <b>Сделка изменена</b>\n\n` +
           `👤 ${name}\n` +
           changes.join("\n") + "\n" +
-          `📈 Прибыль: <b>${fmtRub(profit)}</b>` +
+          `📈 Прибыль: <b>${fmtPair(profit, rate)}</b>` +
           (diff !== 0 ? ` (${diff > 0 ? "+" : ""}${fmtRub(diff)})` : "") +
           `\n\n<i>Изменил: ${esc(session.displayName)}</i>`,
       ).catch(() => {});
@@ -150,7 +150,7 @@ export async function DELETE(_: Request, { params }: { params: Promise<{ id: str
     `🗑 <b>Сделка удалена</b>\n\n` +
       `👤 ${esc(doomed.student_name)}\n` +
       `💴 ${fmtCny(Number(doomed.amount_cny))}\n` +
-      `📈 Была прибыль: ${fmtRub(Number(doomed.profit_rub ?? 0))}\n\n` +
+      `📈 Была прибыль: ${fmtPair(Number(doomed.profit_rub ?? 0), Number(doomed.atb_rate ?? 0))}\n\n` +
       `<i>Удалил: ${esc(session.displayName)}</i>`,
   ).catch(() => {});
 

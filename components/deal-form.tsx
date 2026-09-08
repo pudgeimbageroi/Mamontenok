@@ -525,27 +525,37 @@ export function DealForm({
               <span className="text-2xs bg-white/15 px-1.5 py-0.5 rounded">{chLabel}</span>
             </div>
             <div className="px-4 py-3.5 space-y-2.5">
-              <Kpi label="Студент платит" value={formatRub(calc.pays)} />
-              <Kpi label={`Уйдёт с ${chLabel}`} value={formatRub(calc.out)} dim />
+              <Kpi label="Студент платит" value={formatCny(form.amount_cny)}
+                sub={formatRub(calc.pays)} />
+              <Kpi label={`Уйдёт с ${chLabel}`} value={formatCny(form.amount_cny)}
+                sub={formatRub(calc.out)} dim />
               <div className="pt-2.5 border-t border-white/15">
                 <div className="text-2xs text-white/70">Прибыль</div>
                 <div className="flex items-center gap-1.5 mt-0.5">
                   {calc.profit >= 0 ? <TrendingUp className="size-4" /> : <TrendingDown className="size-4" />}
-                  <span className="num font-display font-bold text-2xl">{formatRub(calc.profit)}</span>
+                  <span className="num font-display font-bold text-2xl">
+                    {form.atb_rate > 0 ? formatCny(calc.profit / form.atb_rate) : "—"}
+                  </span>
                 </div>
-                {form.atb_rate > 0 && (
-                  <div className="text-2xs text-white/60 num mt-0.5">
-                    ≈ {formatCny(calc.profit / form.atb_rate)}
-                  </div>
-                )}
+                <div className="text-2xs text-white/60 num mt-0.5">
+                  {formatRub(calc.profit)}
+                </div>
               </div>
               <div className="pt-2.5 border-t border-white/15">
                 <div className="text-2xs text-white/70">
                   {form.visibility === "private" ? "Вся прибыль твоя" : "На одного неандертальца"}
                 </div>
-                <div className="num font-display font-bold text-lg mt-0.5">
-                  {formatRub(form.visibility === "private" ? calc.profit : calc.share)}
-                </div>
+                {(() => {
+                  const share = form.visibility === "private" ? calc.profit : calc.share;
+                  return (
+                    <>
+                      <div className="num font-display font-bold text-lg mt-0.5">
+                        {form.atb_rate > 0 ? formatCny(share / form.atb_rate) : "—"}
+                      </div>
+                      <div className="text-2xs text-white/60 num">{formatRub(share)}</div>
+                    </>
+                  );
+                })()}
               </div>
             </div>
             {form.channel === "shage" && !form.shage_settled && calc.profit > 0 && (
@@ -582,12 +592,23 @@ export function DealForm({
   );
 }
 
-function Kpi({ label, value, dim }: { label: string; value: string; dim?: boolean }) {
+function Kpi({
+  label, value, sub, dim,
+}: {
+  label: string;
+  value: string;
+  /** Вторая валюта — рубли под юанями */
+  sub?: string;
+  dim?: boolean;
+}) {
   return (
     <div className="flex items-baseline justify-between gap-3">
       <span className={cn("text-2xs", dim ? "text-white/60" : "text-white/80")}>{label}</span>
-      <span className={cn("num font-display font-semibold text-sm", dim && "text-white/80")}>
-        {value}
+      <span className="text-right">
+        <span className={cn("num font-display font-semibold text-sm block", dim && "text-white/80")}>
+          {value}
+        </span>
+        {sub && <span className="num text-2xs text-white/60 block">{sub}</span>}
       </span>
     </div>
   );

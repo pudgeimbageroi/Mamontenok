@@ -3,11 +3,12 @@
 import Link from "next/link";
 import { Pencil, Lock, Check, Hourglass } from "lucide-react";
 import { cn, formatRub, formatCny, formatRate } from "@/lib/utils";
+import { moneyOf, type Money } from "@/lib/money";
 import { channelInfo } from "@/lib/channels";
 import { statusInfo } from "@/lib/deal-statuses";
 import type { Deal } from "@/lib/types";
 import { Modal } from "@/components/ui/modal";
-import { Num, Tag } from "@/components/ui/primitives";
+import { MoneyPair, Tag } from "@/components/ui/primitives";
 
 const MONTHS = [
   "января", "февраля", "марта", "апреля", "мая", "июня",
@@ -30,8 +31,19 @@ function longDate(iso: string) {
 export function DealDialog({ deal, onClose }: { deal: Deal; onClose: () => void }) {
   const ch = channelInfo(deal.channel ?? "atb");
   const st = statusInfo(deal.status);
-  const profit = deal.profit_rub ?? 0;
   const isPrivate = deal.visibility === "private";
+
+  /*
+   * Три суммы сверху. У «студент платит» и «закупки» юаневая часть
+   * не пересчитывается — это одна и та же сумма ¥ по разным курсам,
+   * поэтому в юанях обе равны сумме сделки. Разница между ними и есть
+   * прибыль, которую в юани уже приходится переводить.
+   */
+  const pays: Money = { cny: deal.amount_cny, rub: deal.student_pays_rub ?? 0 };
+  const cost: Money = { cny: deal.amount_cny, rub: deal.atb_outflow_rub ?? 0 };
+  const profit = moneyOf(deal, deal.profit_rub);
+  const myShare = moneyOf(deal, deal.owner_share_rub);
+  const partnerShare = moneyOf(deal, deal.partner_share_rub);
 
   return (
     <Modal
@@ -49,12 +61,12 @@ export function DealDialog({ deal, onClose }: { deal: Deal; onClose: () => void 
     >
       {/* ─── Итог: то, ради чего сделку и открывают ─── */}
       <div className="grid grid-cols-3 divide-x divide-line border-b border-line">
-        <Cell label="Студент платит" value={formatRub(deal.student_pays_rub)} />
-        <Cell label="Закупка" value={formatRub(deal.atb_outflow_rub)} tone="muted" />
+        <Cell label="Студент платит" money={pays} />
+        <Cell label="Закупка" money={cost} tone="muted" />
         <Cell
           label="Прибыль"
-          value={formatRub(profit)}
-          tone={profit >= 0 ? "success" : "danger"}
+          money={profit}
+          tone={profit.rub >= 0 ? "success" : "danger"}
         />
       </div>
 
@@ -92,10 +104,13 @@ export function DealDialog({ deal, onClose }: { deal: Deal; onClose: () => void 
         <Section title="Доли">
           <Row
             label="Моя"
-            value={formatRub(deal.owner_share_rub)}
+            value={`${formatCny(myShare.cny)} · ${formatRub(myShare.rub)}`}
             hint={isPrivate ? "вся прибыль — сделка личная" : undefined}
           />
-          <Row label="Егора" value={formatRub(deal.partner_share_rub)} />
+          <Row
+            label="Егора"
+            value={`${formatCny(partnerShare.cny)} · ${formatRub(partnerShare.rub)}`}
+          />
         </Section>
 
         <Section title="Детали">
@@ -135,16 +150,16 @@ export function DealDialog({ deal, onClose }: { deal: Deal; onClose: () => void 
 }
 
 function Cell({
-  label, value, tone = "default",
+  label, money, tone = "default",
 }: {
   label: string;
-  value: string;
+  money: Money;
   tone?: "default" | "muted" | "success" | "danger";
 }) {
   return (
     <div className="px-3 py-2.5">
       <div className="label-micro mb-0.5">{label}</div>
-      <Num value={value} tone={tone} />
+      <MoneyPair cny={money.cny} rub={money.rub} tone={tone} align="left" />
     </div>
   );
 }
